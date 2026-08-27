@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Head Space Level Capture</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+    }
+
+    #frame {
+      width: 100vw;
+      height: 100vh;
+      border: 0;
+      display: block;
+      background: #000;
+    }
+  </style>
+</head>
+<body data-capture-ready="0">
+  <iframe
+    id="frame"
+    src="./index.html"
+    allow="autoplay; fullscreen"
+    referrerpolicy="no-referrer"
+  ></iframe>
+
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const level = Number(params.get("level") || "1");
+      const fitLayout = params.get("fit") === "1";
+      const multiplayer = params.get("multiplayer") === "1";
+      const multiplayerMode = params.get("mode") === "hunt-the-boss" ? "hunt-the-boss" : "head-to-head";
+      const frame = document.getElementById("frame");
+
+      function markReady() {
+        document.body.dataset.captureReady = "1";
+        document.title = `Head Space Capture Ready ${level}`;
+      }
+
+      function hideOverlayUi(doc) {
+        let style = doc.getElementById("headSpaceCaptureHideUi");
+        if (!style) {
+          style = doc.createElement("style");
+          style.id = "headSpaceCaptureHideUi";
+          style.textContent = [
+            "#headSpaceHud { display: none !important; }",
+            "#headSpaceBrandBadge { display: none !important; }",
+            "#headSpacePauseOverlay { display: none !important; }",
+          ].join("\n");
+          doc.head.appendChild(style);
+        }
+      }
+
+      function selectLevel(win) {
+        const game = win.headSpaceGame;
+        if (!game) return false;
+
+        const variables = game.getVariables();
+        variables.get("CurrentLevel").setNumber(level);
+        variables.get("MultiplayerMode").setBoolean(multiplayer);
+        variables.get("MultiplayerGameMode").setString(multiplayerMode);
+        game.getSceneStack().replace("Game", true);
+        return true;
+      }
+
+      function sceneLooksReady(win) {
+        const game = win.headSpaceGame;
+        if (!game) return false;
+
+        const scene = game.getSceneStack().getCurrentScene();
+        if (!scene || scene.getName() !== "Game") return false;
+
+        const sceneLevel = game.getVariables().get("CurrentLevel").getAsNumber();
+        if (sceneLevel !== level) return false;
+
+        const players = scene.getObjects("Player");
+        const planets = [];
+        const planetNames = [
+          "Planet_1",
+          "Planet_2",
+          "Planet_3",
+          "Planet_4",
+          "Planet_5",
+          "Planet_6",
+          "Planet_7",
+          "Planet_8",
+        ];
+        for (let i = 0; i < planetNames.length; i++) {
+          const matches = scene.getObjects(planetNames[i]);
+          for (let j = 0; j < matches.length; j++) planets.push(matches[j]);
+        }
+
+        return players.length > 0 || planets.length > 0;
+      }
+
+      function getObjectBounds(object) {
+        if (object && typeof object.getAABB === "function") {
+          const aabb = object.getAABB();
+          if (aabb && aabb.min && aabb.max) {
+            return {
+              minX: aabb.min[0],
+              minY: aabb.min[1],
+              maxX: aabb.max[0],
+              maxY: aabb.max[1],
+            };
+          }
+        }
+
+        const width = Math.max(0, object && object.getWidth ? object.getWidth() : 0);
+        const height = Math.max(0, object && object.getHeight ? object.getHeight() : 0);
+        const x = object && object.getDrawableX ? object.getDrawableX() : object.getX();
+        const y = object && object.getDrawableY ? object.getDrawableY() : object.getY();
+        return { minX: x, minY: y, maxX: x + width, maxY: y + height };
+      }
+
+      function fitArenaCamera(win, freezeScene) {
+        const game = win.headSpaceGame;
+        const scene = game && game.getSceneStack().getCurrentScene();
+        if (!scene || scene.getName() !== "Game") return false;
+
+        const walls = scene
+          .getObjects("Walls")
+          .filter((wall) => Math.max(wall.getWidth ? wall.getWidth() : 0, wall.getHeight ? wall.getHeight() : 0) > 0);
+        if (!walls.length) return false;
+
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (let i = 0; i < walls.length; i++) {
+          const bounds = getObjectBounds(walls[i]);
+          minX = Math.min(minX, bounds.minX);
+          minY = Math.min(minY, bounds.minY);
+          maxX = Math.max(maxX, bounds.maxX);
+          maxY = Math.max(maxY, bounds.maxY);
+        }
+        if (![minX, minY, maxX, maxY].every(Number.isFinite)) return false;
+
+        const width = Math.max(1, maxX - minX);
+        const height = Math.max(1, maxY - minY);
+        const worldPadding = Math.max(48, Math.min(width, height) * 0.04);
+        const viewportWidth = Math.max(1, frame.clientWidth || 1280);
+        const viewportHeight = Math.max(1, frame.clientHeight || 720);
+        const screenPadding = 34;
+        const zoom = Math.max(
+          0.05,
+          Math.min(
+            2,
+            (viewportWidth - screenPadding * 2) / (width + worldPadding * 2),
+            (viewportHeight - screenPadding * 2) / (height + worldPadding * 2)
+          )
+        );
+        const centerX = (minX + maxX) * 0.5;
+        const centerY = (minY + maxY) * 0.5;
+        for (const layerName of ["", "Texture", "Lighting"]) {
+          win.gdjs.evtTools.camera.setCameraX(scene, centerX, layerName, 0);
+          win.gdjs.evtTools.camera.setCameraY(scene, centerY, layerName, 0);
+          win.gdjs.evtTools.camera.setCameraZoom(scene, zoom, layerName, 0);
+        }
+
+        if (freezeScene) {
+          scene.getVariables().get("Paused").setBoolean(true);
+          win.gdjs.evtTools.runtimeScene.setTimeScale(scene, 0);
+        }
+        for (const name of ["Message1", "Message2", "Message3"]) {
+          const objects = scene.getObjects(name);
+          for (let i = 0; i < objects.length; i++) objects[i].hide(true);
+        }
+        return true;
+      }
+
+      function syncFrame() {
+        const win = frame.contentWindow;
+        const doc = frame.contentDocument;
+        if (!win || !doc) return;
+
+        hideOverlayUi(doc);
+        if (!selectLevel(win)) return;
+
+        let tries = 0;
+        const interval = win.setInterval(() => {
+          tries += 1;
+          hideOverlayUi(doc);
+
+          if (sceneLooksReady(win) || tries > 120) {
+            win.clearInterval(interval);
+            if (!fitLayout) {
+              win.requestAnimationFrame(() => {
+                win.requestAnimationFrame(() => {
+                  hideOverlayUi(doc);
+                  markReady();
+                });
+              });
+              return;
+            }
+
+            let fitFrames = 0;
+            win.setInterval(() => {
+              hideOverlayUi(doc);
+              if (fitArenaCamera(win, false)) fitFrames += 1;
+              if (fitFrames === 90) {
+                fitArenaCamera(win, true);
+                markReady();
+              }
+            }, 16);
+          }
+        }, 50);
+      }
+
+      frame.addEventListener("load", () => {
+        syncFrame();
+      });
+    })();
+  </script>
+</body>
+</html>

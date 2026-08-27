@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HEADNAUT</title>
+  <script>
+    // Legacy bootstrap URL: return to the main game without starting a nested
+    // GDevelop asset load. Multiplayer now launches in memory.
+    location.replace("./index.html?v=20260807-in-memory-m5-launch-18");
+  </script>
+  <style>
+    html, body, iframe { width: 100%; height: 100%; margin: 0; border: 0; overflow: hidden; background: #000; }
+    iframe { display: block; }
+  </style>
+</head>
+<body>
+  <iframe id="game" src="./index.html?v=20260807-dedicated-multiplayer-bootstrap-17" allow="autoplay; fullscreen"></iframe>
+  <script>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const level = Math.max(1, Math.min(12, Math.round(Number(params.get("level")) || 1)));
+      const players = Math.max(1, Math.min(4, Math.round(Number(params.get("players")) || 1)));
+      const mode = params.get("mode") === "hunt-the-boss" ? "hunt-the-boss" : "head-to-head";
+      const frame = document.getElementById("game");
+      let launched = false;
+
+      function launch() {
+        if (launched) return;
+        const win = frame.contentWindow;
+        const game = win && win.headSpaceGame;
+        if (!game || !game.getSceneStack().getCurrentScene()) return;
+        launched = true;
+        const variables = game.getVariables();
+        variables.get("CurrentLevel").setNumber(level);
+        variables.get("MultiplayerMode").setBoolean(true);
+        variables.get("MultiplayerLevel").setNumber(level);
+        variables.get("MultiplayerPlayerCount").setNumber(players);
+        variables.get("MultiplayerGameMode").setString(mode);
+        game.getSceneStack().replace("Game", true);
+      }
+
+      const timer = setInterval(() => {
+        launch();
+        if (launched) clearInterval(timer);
+      }, 16);
+    })();
+  </script>
+</body>
+</html>
