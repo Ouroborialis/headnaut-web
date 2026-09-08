@@ -1829,8 +1829,49 @@
     const usedImages = new Set();
     const usedHelmets = new Set();
     const participants = [];
+    const room = globalThis.HeadSpaceMultiplayerService?.getRoom?.() || globalThis.headSpaceMultiplayerRoom;
+    const roomPlayers = Array.isArray(room?.players)
+      ? room.players.slice().sort((a, b) => Number(a.playerNumber) - Number(b.playerNumber))
+      : [];
+    const localPlayerNumber = Math.max(1, Number(room?.localPlayerNumber) || gdjs.multiplayer?.getCurrentPlayerNumber?.() || 1);
+    const participantOrder = [
+      localPlayerNumber,
+      ...roomPlayers.map(entry => Number(entry.playerNumber)).filter(number => number && number !== localPlayerNumber),
+    ];
+
+    const applyParticipantIdentity = (object, participantNumber, role) => {
+      if (!object || !participantNumber) return;
+      object.__headSpaceParticipantId = `player-${participantNumber}`;
+      object.networkId = `headnaut-${role}-${participantNumber}`;
+      const behavior = object.getBehavior?.("MultiplayerObject");
+      if (behavior) behavior.playerNumber = participantNumber;
+    };
+
+    const applyParticipantCosmetic = (object, profile, role) => {
+      if (!object || !profile) return;
+      const animationIndex = Number(role === "image" ? profile.characterIndex : profile.helmetIndex);
+      if (Number.isFinite(animationIndex) && object.hasBehavior?.("Animation")) {
+        object.getBehavior("Animation").setAnimationIndex(clamp(
+          Math.round(animationIndex),
+          0,
+          role === "image" ? NATIVE_CHARACTER_COUNT - 1 : HELMET_COUNT - 1
+        ));
+      }
+      if (role !== "image" || animationIndex < NATIVE_CHARACTER_COUNT || !profile.characterUrl || typeof PIXI === "undefined") {
+        if (role === "image") object.__headSpaceParticipantCustomTexture = false;
+        return;
+      }
+      const renderer = object.getRendererObject?.();
+      if (!renderer) return;
+      renderer.texture = PIXI.Texture.from(profile.characterUrl);
+      object.__headSpaceUsesCustomPlayerTexture = true;
+      object.__headSpaceParticipantCustomTexture = true;
+    };
 
     players.forEach((player, index) => {
+      const participantNumber = participantOrder[index] || index + 1;
+      const profile = roomPlayers.find(entry => Number(entry.playerNumber) === participantNumber) || null;
+      applyParticipantIdentity(player, participantNumber, "player");
       const id = getMultiplayerParticipantId(player, index);
       let image =
         player.__headSpaceImageCompanion &&
@@ -1843,7 +1884,10 @@
       if (!image) image = createImageCompanionForHost(runtimeScene, player, "Player", "PlayerImage");
       if (image) {
         bindOwnedCompanion(player, image, "image");
-        if (index === 0 && image.hasBehavior?.("Animation")) {
+        applyParticipantIdentity(image, participantNumber, "image");
+        if (profile) {
+          applyParticipantCosmetic(image, profile, "image");
+        } else if (index === 0 && image.hasBehavior?.("Animation")) {
           image
             .getBehavior("Animation")
             .setAnimationIndex(
@@ -1874,7 +1918,10 @@
       }
       if (helmet) {
         bindOwnedCompanion(player, helmet, "helmet");
-        if (index === 0 && helmet.hasBehavior?.("Animation")) {
+        applyParticipantIdentity(helmet, participantNumber, "helmet");
+        if (profile) {
+          applyParticipantCosmetic(helmet, profile, "helmet");
+        } else if (index === 0 && helmet.hasBehavior?.("Animation")) {
           helmet
             .getBehavior("Animation")
             .setAnimationIndex(
@@ -1887,7 +1934,7 @@
         }
         usedHelmets.add(helmet);
       }
-      participants.push({ id, player, image: image || null, helmet: helmet || null, local: index === 0 });
+      participants.push({ id, player, image: image || null, helmet: helmet || null, local: participantNumber === localPlayerNumber });
     });
 
     for (const image of images) {
@@ -21156,9 +21203,11 @@
       // native animation frame is already installed (observed on multiplayer
       // M6), which enlarged the native baked-in grey helmet by 1.18.
       const usesCustomTexture = Boolean(
-        image?.__headSpaceUsesCustomPlayerTexture &&
-        customPlayerTexture &&
-        imageRenderer?.texture === customPlayerTexture
+        image?.__headSpaceParticipantCustomTexture || (
+          image?.__headSpaceUsesCustomPlayerTexture &&
+          customPlayerTexture &&
+          imageRenderer?.texture === customPlayerTexture
+        )
       );
       const imageDiameter = usesCustomTexture
         ? nativeImageDiameter * CUSTOM_PLAYER_HELMET_FILL_SCALE
@@ -21951,12 +22000,14 @@
         // Queue replacement until GDevelop finishes this event frame. The
         // pointer shield prevents click-through and the deferred request keeps
         // the new scene renderer attached to the canvas.
-        gdjs.evtTools.runtimeScene.replaceScene(runtimeScene, "Game", true);
+        queuePauseMenuNavigation(runtimeScene, level);
       };
       setup.open({
         avatar: {
           characterUrl: getSelectedCharacterUrl(runtimeScene),
           helmetUrl: getSelectedHelmetUrl(runtimeScene),
+          characterIndex: characterCarouselIndex,
+          helmetIndex: Math.round(runtimeScene.getGame().getVariables().getFromIndex(1).getAsNumber()),
         },
         availableLevels: Array.from(
           { length: PLAYABLE_LEVEL_MAX - PLAYABLE_LEVEL_MIN + 1 },
@@ -21968,15 +22019,38 @@
           setRuntimeTimeScale(runtimeScene, 1);
           syncHomeMenuActionButtons(runtimeScene, true);
         },
-        onOpenOnlineLobbies: async (match) => {
+        onCreateRoom: async () => {
           const service = globalThis.HeadSpaceMultiplayerService;
-          if (!service?.openHostedLobbies) throw new Error("Multiplayer service adapter is unavailable.");
-          setup.close();
-          setSceneBoolean(runtimeScene, "Paused", false);
-          setRuntimeTimeScale(runtimeScene, 1);
-          await service.openHostedLobbies(runtimeScene, match, launchMultiplayerMatch);
+          if (!service?.createRoom) throw new Error("Multiplayer service adapter is unavailable.");
+          return service.createRoom(runtimeScene, {
+            name: gdjs.playerAuthentication?.getUsername?.() || "YOU",
+            characterUrl: getSelectedCharacterUrl(runtimeScene),
+            helmetUrl: getSelectedHelmetUrl(runtimeScene),
+            characterIndex: characterCarouselIndex,
+            helmetIndex: Math.round(runtimeScene.getGame().getVariables().getFromIndex(1).getAsNumber()),
+          }, {
+            onRoomUpdate: room => setup.updateRoom(room),
+            onStart: launchMultiplayerMatch,
+          });
         },
-        onStartGame: launchMultiplayerMatch,
+        onJoinRoom: async code => {
+          const service = globalThis.HeadSpaceMultiplayerService;
+          if (!service?.joinRoom) throw new Error("Multiplayer service adapter is unavailable.");
+          return service.joinRoom(runtimeScene, code, {
+            name: gdjs.playerAuthentication?.getUsername?.() || "YOU",
+            characterUrl: getSelectedCharacterUrl(runtimeScene),
+            helmetUrl: getSelectedHelmetUrl(runtimeScene),
+            characterIndex: characterCarouselIndex,
+            helmetIndex: Math.round(runtimeScene.getGame().getVariables().getFromIndex(1).getAsNumber()),
+          }, {
+            onRoomUpdate: room => setup.updateRoom(room),
+            onStart: launchMultiplayerMatch,
+          });
+        },
+        onSettingsChange: match => {
+          globalThis.HeadSpaceMultiplayerService?.updateSettings?.(match.level, match.mode);
+        },
+        onStartRoom: () => globalThis.HeadSpaceMultiplayerService?.startRoom?.(),
       });
       const setupRoot = document.getElementById("headspace-multiplayer-setup");
       if (setupRoot && !setupRoot.__headSpaceInputGuardInstalled) {

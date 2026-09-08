@@ -14,17 +14,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
 
 	<style>
+		html,
 		body {
+			position: fixed;
+			inset: 0;
+			width: 100%;
+			height: 100%;
+			height: 100dvh;
 			margin: 0;
 			padding: 0;
 			background-color: #000000;
             overflow: hidden;
+			overscroll-behavior: none;
+			touch-action: none;
 		}
         #canvasArea {
+			position: absolute;
+			inset: 0;
+			width: 100%;
+			height: 100%;
             margin-left: auto;
             margin-right: auto;
             overflow: hidden;
         }
+        canvas {
+			display: block;
+			max-width: 100%;
+			max-height: 100%;
+		}
         
 	</style>
     <!-- Libs and GDJS core files : -->
@@ -201,8 +218,8 @@
 	<script src="Extensions/Multiplayer/multiplayerVariablesManager.js" crossorigin="anonymous"></script>
 	<script src="Extensions/Multiplayer/multiplayercomponents.js" crossorigin="anonymous"></script>
 	<script src="Extensions/Multiplayer/multiplayertools.js" crossorigin="anonymous"></script>
-	<script src="Extensions/Multiplayer/peer.js" crossorigin="anonymous"></script>
-	<script src="Extensions/Multiplayer/peerJsHelper.js" crossorigin="anonymous"></script>
+	<script src="Extensions/Multiplayer/peer.js?v=20260903-private-rooms-2" crossorigin="anonymous"></script>
+	<script src="Extensions/Multiplayer/peerJsHelper.js?v=20260903-private-rooms-2" crossorigin="anonymous"></script>
 	<script src="Extensions/PanelSpriteObject/panelspriteruntimeobject-pixi-renderer.js" crossorigin="anonymous"></script>
 	<script src="Extensions/PanelSpriteObject/panelspriteruntimeobject.js" crossorigin="anonymous"></script>
 	<script src="Extensions/ParticleSystem/particleemitterobject-pixi-renderer.js" crossorigin="anonymous"></script>
@@ -262,11 +279,11 @@
 	<script src="code0.js?v=20260709-level12-cosmic-alien-absorb-1" crossorigin="anonymous"></script>
 	<script src="code1.js?v=20260629-legacy-tutorial-removal-1" crossorigin="anonymous"></script>
 	<script src="data.js?v=20260623-home-parallax-stars" crossorigin="anonymous"></script>
-	<script src="headspace-multiplayer-service.js?v=20260821-real-lobbies-1" crossorigin="anonymous"></script>
-	<script src="multiplayer-setup.js?v=20260821-real-lobbies-1" crossorigin="anonymous"></script>
+	<script src="headspace-multiplayer-service.js?v=20260903-private-rooms-4" crossorigin="anonymous"></script>
+	<script src="multiplayer-setup.js?v=20260903-private-rooms-3" crossorigin="anonymous"></script>
 	<script src="headspace-multiplayer-framework.js?v=20260812-m6-celestial-7" crossorigin="anonymous"></script>
 	<script src="headspace-multiplayer-levels.js?v=20260817-m9-moving-shadow-lights-49" crossorigin="anonymous"></script>
-    <script src="headspace-runtime-patch.js?v=20260817-m9-moving-shadow-lights-99" crossorigin="anonymous"></script>
+    <script src="headspace-runtime-patch.js?v=20260903-private-rooms-4" crossorigin="anonymous"></script>
 
 
 </head>
@@ -277,6 +294,27 @@
     (function() {
         var game = new gdjs.RuntimeGame(gdjs.projectData, {});
         window.headSpaceGame = game;
+
+		// Mobile browser chrome changes the usable viewport independently from
+		// window.innerHeight. Notify GDevelop after both viewport resizing and
+		// physical orientation changes so its landscape canvas is recalculated
+		// instead of retaining the dimensions from initial page load.
+		var mobileViewportResizeTimer = 0;
+		var refitGameToMobileViewport = function () {
+			window.clearTimeout(mobileViewportResizeTimer);
+			mobileViewportResizeTimer = window.setTimeout(function () {
+				document.documentElement.style.height = "100dvh";
+				document.body.style.height = "100dvh";
+				game.onWindowInnerSizeChanged();
+			}, 80);
+		};
+		window.addEventListener("resize", refitGameToMobileViewport, { passive: true });
+		window.addEventListener("orientationchange", function () {
+			refitGameToMobileViewport();
+			window.setTimeout(refitGameToMobileViewport, 300);
+		}, { passive: true });
+		window.visualViewport?.addEventListener("resize", refitGameToMobileViewport, { passive: true });
+		window.screen?.orientation?.addEventListener?.("change", refitGameToMobileViewport);
 
         var launchParams = new URLSearchParams(window.location.search);
         try {

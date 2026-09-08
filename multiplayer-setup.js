@@ -45,7 +45,7 @@
   function updateRoom(nextRoom) {
     room = nextRoom && typeof nextRoom === "object" ? { ...nextRoom } : null;
     globalThis.headSpaceMultiplayerRoom = room ? { ...room } : null;
-    document.getElementById(ROOT_ID)?.__renderPlayers?.();
+    document.getElementById(ROOT_ID)?.__renderRoom?.();
   }
 
   function open(options = {}) {
@@ -105,10 +105,9 @@
         #${ROOT_ID} .mp-player-name{font:700 18px Achron,Segoe UI,sans-serif}.mp-player-role{color:#83cfe8;font:14px Segoe UI,sans-serif;margin-top:3px}
         #${ROOT_ID} .mp-launch-row{display:grid;grid-template-columns:1fr 150px;gap:10px;align-items:stretch}
         #${ROOT_ID} .mp-launch-row .mp-status{margin-top:10px}
-        #${ROOT_ID} [data-solo-start]{margin-top:10px;border-color:#00ffc8;color:#dffff8;font-size:23px}
+        #${ROOT_ID} [data-start]{margin-top:10px;border-color:#00ffc8;color:#dffff8;font-size:23px}
         #${ROOT_ID} button:disabled{cursor:not-allowed;filter:grayscale(1);opacity:.42;transform:none;outline:none}
-        #${ROOT_ID} .mp-room{display:none;margin-top:14px;padding:16px;border:2px solid #00ffc8;border-radius:14px;text-align:center;background:rgba(0,65,55,.25)}
-        #${ROOT_ID} .mp-code{font-size:clamp(34px,5vw,54px);letter-spacing:8px;color:#00ffc8;margin:8px 0 14px}
+        #${ROOT_ID} input.mp-room-code-live{border-color:#00ffc8;color:#00ffc8;background:rgba(0,65,55,.32);box-shadow:0 0 16px rgba(0,255,200,.5);font-size:25px}
         #${ROOT_ID} .mp-note{color:#83cfe8;font:15px/1.45 Segoe UI,sans-serif;margin:5px 0 0}
         #${ROOT_ID} .mp-friends{grid-column:1/-1;padding-top:16px;padding-bottom:16px}
         #${ROOT_ID} .mp-friends h2{margin:0 0 12px}
@@ -123,23 +122,14 @@
           <section class="mp-panel"><h2>SELECT LEVEL</h2><div class="mp-levels"></div><div class="mp-mode-title">MODE</div><div class="mp-modes"><button class="mp-mode" data-mode="head-to-head" aria-pressed="true" type="button">HEAD TO HEAD</button><button class="mp-mode" data-mode="hunt-the-boss" aria-pressed="false" type="button">HUNT THE BOSS</button></div><p class="mp-note">Head to Head: absorb the other players. Hunt the Boss: work together to absorb the boss.</p></section>
           <section class="mp-panel mp-actions">
             <h2>PRIVATE ROOM</h2>
-            <button class="mp-primary" data-create type="button">OPEN ONLINE LOBBIES</button>
+            <button class="mp-primary" data-create type="button">CREATE ROOM</button>
             <div class="mp-room-row"><input data-code aria-label="Room code" maxlength="6" autocomplete="off" placeholder="ROOM CODE"><button class="mp-join" data-join type="button">JOIN ROOM</button></div>
-            <div class="mp-social"><button data-invite type="button">INVITE FRIENDS</button><button data-friends type="button">FRIEND SEARCH</button></div>
-            <p class="mp-note">Online rooms use GDevelop's hosted multiplayer service. Direct private codes require a newer runtime capability.</p>
+            <div class="mp-social"><button data-invite type="button" disabled>INVITE FRIENDS</button><button data-copy-code type="button" disabled>COPY ROOM CODE</button></div>
+            <p class="mp-note">Create a room and share its six-character code. Guests join here without leaving this screen.</p>
             <div class="mp-launch">
               <div class="mp-player-heading" data-player-heading>PLAYERS (1/4)</div>
               <div data-player-list><div class="mp-player"><div class="mp-player-avatar"><img data-player-character alt=""><img data-player-helmet alt=""></div><div><div class="mp-player-name">YOU</div><div class="mp-player-role">HOST · READY</div></div></div></div>
-              <div class="mp-launch-row"><div class="mp-status" role="status" aria-live="polite">Create a room, then choose a level together.</div><button data-solo-start type="button" disabled>START</button></div>
-            </div>
-            <div class="mp-room"><div>PRIVATE ROOM READY</div><div class="mp-code"></div></div>
-          </section>
-          <section class="mp-panel mp-friends">
-            <h2>MY FRIENDS</h2>
-            <div class="mp-friend-list">
-              <div class="mp-friend">Known friends will appear here</div>
-              <div class="mp-friend">Invite a friend to your room</div>
-              <div class="mp-friend">Friend status coming soon</div>
+              <div class="mp-launch-row"><div class="mp-status" role="status" aria-live="polite">Create a room or enter an invitation code.</div><button data-start type="button" disabled>START</button></div>
             </div>
           </section>
         </div>
@@ -182,10 +172,12 @@
 
     const levels = root.querySelector(".mp-levels");
     const status = root.querySelector(".mp-status");
-    const roomPanel = root.querySelector(".mp-room");
-    const roomCode = root.querySelector(".mp-code");
     const codeInput = root.querySelector("[data-code]");
-    const soloStartButton = root.querySelector("[data-solo-start]");
+    const startButton = root.querySelector("[data-start]");
+    const createButton = root.querySelector("[data-create]");
+    const joinButton = root.querySelector("[data-join]");
+    const inviteButton = root.querySelector("[data-invite]");
+    const copyCodeButton = root.querySelector("[data-copy-code]");
     const playerHeading = root.querySelector("[data-player-heading]");
     const playerList = root.querySelector("[data-player-list]");
     const setStatus = (message, isError = false) => {
@@ -193,13 +185,7 @@
       status.style.color = isError ? "#ff8ca0" : "#bceeff";
     };
     const modeLabel = () => selectedMode === "hunt-the-boss" ? "Hunt the Boss" : "Head to Head";
-    const syncRoomSelection = () => {
-      if (!room) return;
-      room.level = selectedLevel;
-      room.mode = selectedMode;
-      room.status = selectedLevel ? "ready" : "waiting-for-level";
-      globalThis.headSpaceMultiplayerRoom = { ...room };
-    };
+    const syncRoomSelection = () => room?.isHost && options.onSettingsChange?.({ level: selectedLevel, mode: selectedMode });
     const renderPlayers = () => {
       const players = Array.isArray(room?.players) && room.players.length
         ? room.players.slice(0, 4)
@@ -211,7 +197,7 @@
         row.className = "mp-player";
         const avatar = document.createElement("div");
         avatar.className = "mp-player-avatar";
-        for (const source of [options.avatar?.characterUrl, options.avatar?.helmetUrl]) {
+        for (const source of [player.characterUrl || options.avatar?.characterUrl, player.helmetUrl || options.avatar?.helmetUrl]) {
           if (!source) continue;
           const image = document.createElement("img");
           image.alt = "";
@@ -230,8 +216,36 @@
         playerList.appendChild(row);
       }
     };
-    root.__renderPlayers = renderPlayers;
-    renderPlayers();
+    const renderRoom = () => {
+      if (room?.level) selectedLevel = Number(room.level);
+      if (room?.mode) selectedMode = room.mode;
+      const inRoom = !!room;
+      const isHost = !!room?.isHost;
+      codeInput.value = room?.code || codeInput.value;
+      codeInput.readOnly = inRoom;
+      codeInput.classList.toggle("mp-room-code-live", inRoom);
+      codeInput.setAttribute("aria-label", inRoom ? `Current room code ${room.code}` : "Room code");
+      createButton.disabled = inRoom;
+      joinButton.disabled = inRoom;
+      codeInput.disabled = inRoom;
+      inviteButton.disabled = !inRoom;
+      copyCodeButton.disabled = !inRoom;
+      for (const button of root.querySelectorAll(".mp-level")) {
+        button.disabled = !inRoom || !isHost;
+        button.setAttribute("aria-pressed", String(Number(button.dataset.level) === selectedLevel));
+      }
+      for (const button of root.querySelectorAll(".mp-mode")) {
+        button.disabled = !inRoom || !isHost;
+        button.setAttribute("aria-pressed", String(button.dataset.mode === selectedMode));
+      }
+      renderPlayers();
+      startButton.disabled = !isHost || !selectedLevel || (room?.players?.length || 0) < 2;
+      if (inRoom) setStatus(isHost
+        ? ((room.players?.length || 0) < 2 ? `Room ${room.code} is ready. Waiting for another player.` : selectedLevel ? `Everyone is ready. Start Level ${selectedLevel} when you are ready.` : "Player joined. Choose a level and mode.")
+        : (selectedLevel ? `Host selected Level ${selectedLevel} - ${modeLabel()}. Waiting for host to start.` : "Connected. Waiting for the host to choose the match."));
+      requestAnimationFrame(() => root.isConnected && fitSetupToViewport());
+    };
+    root.__renderRoom = renderRoom;
     for (const button of root.querySelectorAll(".mp-mode")) {
       button.setAttribute("aria-pressed", String(button.dataset.mode === selectedMode));
       button.addEventListener("click", () => {
@@ -266,54 +280,39 @@
           other.setAttribute("aria-pressed", String(Number(other.dataset.level) === level));
         }
         syncRoomSelection();
-        soloStartButton.disabled = false;
         setStatus(`Level ${level} · ${modeLabel()} selected.`);
       });
       levels.appendChild(button);
     }
     if (selectedLevel && availableLevels.includes(selectedLevel)) {
-      soloStartButton.disabled = false;
       setStatus(`Level ${selectedLevel} · ${modeLabel()} selected.`);
     }
+
+    renderRoom();
 
     root.querySelector(".mp-back").addEventListener("click", () => {
       close();
       options.onBack?.();
     });
-    root.querySelector("[data-create]").addEventListener("click", async () => {
-      if (!selectedLevel) {
-        setStatus("Choose a level before opening the online lobbies.", true);
+    createButton.addEventListener("click", async () => {
+      if (typeof options.onCreateRoom !== "function") {
+        setStatus("Private rooms are unavailable in this build.", true);
         return;
       }
-      if (typeof options.onOpenOnlineLobbies !== "function") {
-        setStatus("Online multiplayer is unavailable in this build.", true);
-        return;
-      }
-      setStatus("Opening the hosted multiplayer lobbies...");
-      try {
-        await options.onOpenOnlineLobbies({ level: selectedLevel, mode: selectedMode });
-      } catch (error) {
-        console.error("Unable to open online multiplayer lobbies.", error);
-        setStatus("Unable to open online lobbies. Check your connection and try again.", true);
+      createButton.disabled = true;
+      setStatus("Creating your private room...");
+      try { updateRoom(await options.onCreateRoom()); }
+      catch (error) {
+        console.error("Unable to create private room.", error);
+        createButton.disabled = false;
+        setStatus(error?.message || "Unable to create a room. Check your connection and try again.", true);
       }
     });
-    soloStartButton.addEventListener("click", () => {
-      if (!selectedLevel) return;
-      const launchRoom = room?.level === selectedLevel
-        ? room
-        : {
-            code: "LOCAL1",
-            level: selectedLevel,
-            mode: selectedMode,
-            maxPlayers: 4,
-            privacy: "private",
-            status: "solo-test",
-            players: [{ id: "local-player", name: "YOU", host: true, ready: true }],
-          };
-      globalThis.headSpaceMultiplayerRoom = { ...launchRoom };
-      options.onStartGame?.({ ...launchRoom });
+    startButton.addEventListener("click", async () => {
+      try { await options.onStartRoom?.(); }
+      catch (error) { setStatus(error?.message || "Unable to start the match.", true); }
     });
-    root.querySelector("[data-join]").addEventListener("click", () => {
+    joinButton.addEventListener("click", async () => {
       const code = codeInput.value.trim().toUpperCase();
       if (code.length !== 6) {
         setStatus("Enter a valid 6-character private room code.", true);
@@ -321,11 +320,29 @@
         return;
       }
       codeInput.value = code;
-      setStatus("Direct private room codes are not supported by this exported runtime yet. Use Online Lobbies.", true);
+      joinButton.disabled = true;
+      setStatus(`Joining room ${code}...`);
+      try { updateRoom(await options.onJoinRoom?.(code)); }
+      catch (error) {
+        joinButton.disabled = false;
+        setStatus(error?.message || "Unable to join that room.", true);
+      }
     });
-    root.querySelector("[data-invite]").addEventListener("click", () => setStatus(room ? `Share room code ${room.code} with a friend.` : "Create a private room first, then share its code."));
-    root.querySelector("[data-friends]").addEventListener("click", () => setStatus("Friend search will be available when online multiplayer is connected."));
+    const copyInvite = async codeOnly => {
+      if (!room) return;
+      const url = new URL(location.href);
+      url.searchParams.set("room", room.code);
+      const text = codeOnly ? room.code : `Join my HEADNAUT room ${room.code}: ${url}`;
+      try {
+        await navigator.clipboard.writeText(text);
+        setStatus(codeOnly ? `Room code ${room.code} copied.` : "Invitation copied. Send it to your friend.");
+      } catch { setStatus(`Share room code ${room.code} with your friend.`); }
+    };
+    inviteButton.addEventListener("click", () => copyInvite(false));
+    copyCodeButton.addEventListener("click", () => copyInvite(true));
     codeInput.addEventListener("input", () => { codeInput.value = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6); });
+    const invitedCode = new URL(location.href).searchParams.get("room");
+    if (invitedCode) codeInput.value = invitedCode.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
     root.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         close();
