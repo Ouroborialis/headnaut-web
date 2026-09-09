@@ -962,6 +962,87 @@
   let musicGestureSeen = false;
   let nextMusicRetryAt = 0;
   let lastBackgroundMusicTrack = null;
+  let screenWakeLock = null;
+  let screenWakeLockRequest = null;
+  let screenWakeLockDesired = false;
+  let nextWakeLockRetryAt = 0;
+
+  function shouldKeepScreenAwake(runtimeScene = activeRuntimeScene) {
+    if (!runtimeScene || runtimeScene.getName?.() !== "Game") return false;
+    const level = getCurrentLevel(runtimeScene);
+    if (!isPlayableLevel(level)) return false;
+    return !getSceneBoolean(runtimeScene, "LevelWon") && !getSceneBoolean(runtimeScene, "LevelLost");
+  }
+
+  async function requestScreenWakeLock() {
+    screenWakeLockDesired = shouldKeepScreenAwake();
+    if (!screenWakeLockDesired || screenWakeLock || screenWakeLockRequest) return Boolean(screenWakeLock);
+    if (document.visibilityState !== "visible" || !navigator.wakeLock?.request) return false;
+    if (Date.now() < nextWakeLockRetryAt) return false;
+
+    try {
+      screenWakeLockRequest = navigator.wakeLock.request("screen");
+      const sentinel = await screenWakeLockRequest;
+      if (!screenWakeLockDesired || document.visibilityState !== "visible") {
+        await sentinel.release?.();
+        return false;
+      }
+      screenWakeLock = sentinel;
+      nextWakeLockRetryAt = 0;
+      sentinel.addEventListener?.("release", () => {
+        if (screenWakeLock === sentinel) screenWakeLock = null;
+      });
+      return true;
+    } catch {
+      // Browser policy, battery-saving mode, or an older browser may deny it.
+      nextWakeLockRetryAt = Date.now() + 5000;
+      return false;
+    } finally {
+      screenWakeLockRequest = null;
+    }
+  }
+
+  function releaseScreenWakeLock() {
+    screenWakeLockDesired = false;
+    const sentinel = screenWakeLock;
+    screenWakeLock = null;
+    if (sentinel?.release) Promise.resolve(sentinel.release()).catch(() => {});
+  }
+
+  function syncScreenWakeLock(runtimeScene = activeRuntimeScene) {
+    const desired = shouldKeepScreenAwake(runtimeScene);
+    screenWakeLockDesired = desired;
+    if (!desired) {
+      releaseScreenWakeLock();
+      return;
+    }
+    void requestScreenWakeLock();
+  }
+
+  function installScreenWakeLockHandlers() {
+    if (installScreenWakeLockHandlers.installed) return;
+    installScreenWakeLockHandlers.installed = true;
+    const tryFromGesture = () => {
+      if (shouldKeepScreenAwake()) void requestScreenWakeLock();
+    };
+    window.addEventListener("pointerdown", tryFromGesture, { capture: true, passive: true });
+    window.addEventListener("touchstart", tryFromGesture, { capture: true, passive: true });
+    window.addEventListener("keydown", tryFromGesture, { capture: true });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") syncScreenWakeLock();
+    });
+    window.addEventListener("pagehide", releaseScreenWakeLock);
+  }
+
+  window.HeadSpaceWakeLock = Object.freeze({
+    request: requestScreenWakeLock,
+    sync: syncScreenWakeLock,
+    getState: () => ({
+      supported: Boolean(navigator.wakeLock?.request),
+      desired: screenWakeLockDesired,
+      active: Boolean(screenWakeLock && !screenWakeLock.released),
+    }),
+  });
 
   window.addEventListener(
     "keydown",
@@ -22803,6 +22884,7 @@
 
   function onSceneLoaded(runtimeScene) {
     activeRuntimeScene = runtimeScene;
+    installScreenWakeLockHandlers();
     ensureBrandBadge();
     ensureHud();
     ensurePauseOverlay();
@@ -22823,6 +22905,7 @@
         setSceneNumber(runtimeScene, "PlayerSpeedDelta", PLAYER_PROPULSION_SPEED_DELTA);
       }
       stabilizeBossLevelStartup(runtimeScene, level);
+      syncScreenWakeLock(runtimeScene);
     }
   }
 
@@ -22879,6 +22962,7 @@
 
   function onScenePostEvents(runtimeScene) {
     activeRuntimeScene = runtimeScene;
+    syncScreenWakeLock(runtimeScene);
     ensureBrandBadge();
     updateBrandBadgePosition();
     ensurePauseOverlay();
