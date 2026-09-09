@@ -6,6 +6,7 @@
   const HUD_ID = "headSpaceHud";
   const HUD_PAUSE_BUTTON_ID = "headSpaceHudPauseButton";
   const BRAND_ID = "headSpaceBrandBadge";
+  const TOUCH_HINT_ID = "headSpaceTouchHint";
   const PAUSE_OVERLAY_ID = "headSpacePauseOverlay";
   const COMPLETION_FILTER_KEY = "__headSpaceCompletionFilter";
   const PAUSE_BUTTON_ASSET = "assets/Grey Button2.png";
@@ -1200,6 +1201,49 @@
     return badge;
   }
 
+  function isTouchLandscapeViewport() {
+    const viewport = window.visualViewport;
+    const width = viewport?.width || window.innerWidth;
+    const height = viewport?.height || window.innerHeight;
+    return (navigator.maxTouchPoints > 0 || window.matchMedia?.("(pointer: coarse)")?.matches) && width > height;
+  }
+
+  function updateBrandBadgePosition() {
+    const badge = ensureBrandBadge();
+    const canvas = document.querySelector("canvas");
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    badge.style.left = `${Math.round(rect.left + 6)}px`;
+    badge.style.bottom = `${Math.round(Math.max(4, window.innerHeight - rect.bottom + 6))}px`;
+  }
+
+  function ensureTouchHint() {
+    let hint = document.getElementById(TOUCH_HINT_ID);
+    if (hint) return hint;
+    hint = document.createElement("div");
+    hint.id = TOUCH_HINT_ID;
+    hint.textContent = "TAP TO MOVE";
+    Object.assign(hint.style, {
+      position: "fixed",
+      display: "none",
+      padding: "6px 10px",
+      border: "1px solid rgba(89,214,255,.72)",
+      borderRadius: "7px",
+      color: "#dff8ff",
+      background: "rgba(1,9,20,.72)",
+      font: "700 12px Achron,Arial,sans-serif",
+      letterSpacing: "1px",
+      pointerEvents: "none",
+      zIndex: "2147483645",
+    });
+    document.body.appendChild(hint);
+    window.addEventListener("pointerdown", () => {
+      hint.dataset.dismissed = "true";
+      hint.style.display = "none";
+    }, { once: true, passive: true });
+    return hint;
+  }
+
   function ensureHud() {
     let hud = document.getElementById(HUD_ID);
     if (hud) return hud;
@@ -1300,6 +1344,8 @@
   function setHudVisible(visible) {
     ensureHud().style.display = visible ? "block" : "none";
     ensureHudPauseButton().style.display = visible ? "flex" : "none";
+    const touchHint = ensureTouchHint();
+    touchHint.style.display = visible && isTouchLandscapeViewport() && touchHint.dataset.dismissed !== "true" ? "block" : "none";
   }
 
   function setHudPauseButtonVisible(visible) {
@@ -1539,10 +1585,34 @@
     }
 
     const hudRect = hud.getBoundingClientRect();
-    const buttonSize = Math.round(clamp(hudRect.height * 0.46, 48, 150));
+    const mobileLandscape = isTouchLandscapeViewport();
+    if (mobileLandscape) {
+      hud.style.padding = "6px 9px";
+      hud.style.fontSize = "clamp(12px, 2.7vh, 16px)";
+      hud.style.lineHeight = "1.06";
+      hud.style.maxWidth = "48vw";
+      hud.style.borderRadius = "7px";
+    } else {
+      hud.style.padding = "clamp(8px, 1vw, 12px) clamp(10px, 1.2vw, 16px)";
+      hud.style.fontSize = "clamp(20px, 1.7vw, 32px)";
+      hud.style.lineHeight = "1.12";
+      hud.style.maxWidth = "calc(100vw - 190px)";
+      hud.style.borderRadius = "10px";
+    }
+    const measuredHudRect = hud.getBoundingClientRect();
+    const buttonSize = Math.round(mobileLandscape ? clamp(window.innerHeight * 0.12, 38, 58) : clamp(measuredHudRect.height * 0.46, 48, 150));
     const gap = Math.round(clamp(hudRect.height * 0.07, 8, 22));
-    pauseButton.style.left = `${Math.round(hudRect.right + gap)}px`;
-    pauseButton.style.top = `${Math.round(hudRect.top + (hudRect.height - buttonSize) * 0.5)}px`;
+    if (mobileLandscape && canvas) {
+      const rect = canvas.getBoundingClientRect();
+      pauseButton.style.left = `${Math.round(rect.right - buttonSize - 12)}px`;
+      pauseButton.style.top = `${Math.round(rect.top + 12)}px`;
+      const hint = ensureTouchHint();
+      hint.style.right = `${Math.round(Math.max(8, window.innerWidth - rect.right + 10))}px`;
+      hint.style.bottom = `${Math.round(Math.max(8, window.innerHeight - rect.bottom + 10))}px`;
+    } else {
+      pauseButton.style.left = `${Math.round(measuredHudRect.right + gap)}px`;
+      pauseButton.style.top = `${Math.round(measuredHudRect.top + (measuredHudRect.height - buttonSize) * 0.5)}px`;
+    }
     pauseButton.style.width = `${buttonSize}px`;
     pauseButton.style.height = `${buttonSize}px`;
     pauseButton.style.fontSize = `${Math.round(buttonSize * 0.56)}px`;
@@ -3001,6 +3071,24 @@
     }
   }
 
+  function removeMobileIntroMessages(runtimeScene) {
+    for (const name of ["Message1", "Message2", "Message3"]) {
+      for (const object of runtimeScene.getObjects(name)) {
+        object.setString?.("");
+        object.setText?.("");
+        object.setOpacity?.(0);
+        object.hide?.(true);
+        const renderer = object.getRendererObject?.();
+        if (renderer) {
+          renderer.visible = false;
+          renderer.renderable = false;
+          renderer.alpha = 0;
+        }
+        object.deleteFromScene?.(runtimeScene);
+      }
+    }
+  }
+
   function getIntroMessages(level) {
     const normalizedLevel = Number(level);
     if (normalizedLevel === 1) {
@@ -3127,6 +3215,10 @@
   }
 
   function showIntroMessages(runtimeScene, level = getCurrentLevel(runtimeScene)) {
+    if (isTouchLandscapeViewport()) {
+      hideIntroMessages(runtimeScene);
+      return;
+    }
     applyIntroMessages(runtimeScene, level);
     positionIntroMessages(runtimeScene);
     const messages = getIntroMessages(level);
@@ -3229,11 +3321,10 @@
 
   function updateHud(runtimeScene, level, elapsedSeconds, bestSeconds) {
     const hud = ensureHud();
-    hud.textContent =
-      `LEVEL ${level}\n` +
-      `TIME ${formatTime(elapsedSeconds)}\n` +
-      `BEST ${formatTime(bestSeconds)}\n` +
-      `TO WIN: ${getWinObjectiveLabel(Number(level), runtimeScene)}`;
+    const objective = getWinObjectiveLabel(Number(level), runtimeScene);
+    hud.textContent = isTouchLandscapeViewport()
+      ? `LEVEL ${level}  ·  TIME ${formatTime(elapsedSeconds)}  ·  BEST ${formatTime(bestSeconds)}\nGOAL: ${objective}`
+      : `LEVEL ${level}\nTIME ${formatTime(elapsedSeconds)}\nBEST ${formatTime(bestSeconds)}\nTO WIN: ${objective}`;
   }
 
   function setRuntimeTimeScale(runtimeScene, scale) {
@@ -22770,6 +22861,7 @@
   function onScenePostEvents(runtimeScene) {
     activeRuntimeScene = runtimeScene;
     ensureBrandBadge();
+    updateBrandBadgePosition();
     ensurePauseOverlay();
     normalizeSharedButtonText(runtimeScene);
     syncInteractiveButtonGlow(runtimeScene);
@@ -22866,6 +22958,7 @@
     const state = ensureSceneState(runtimeScene, level);
     applySharedLateLevelOutcomeConditions(runtimeScene, level, state);
     suppressLegacyTutorialMessages(runtimeScene, level, state);
+    if (isTouchLandscapeViewport()) removeMobileIntroMessages(runtimeScene);
     ensureBossEnemy(runtimeScene, level, state);
     ensureLevelFourExtraEnemies(runtimeScene, level, state);
     ensureLevelFourBaitEnemiesRelocated(runtimeScene, level, state);

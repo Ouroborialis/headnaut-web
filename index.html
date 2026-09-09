@@ -42,6 +42,42 @@
 			max-width: 100%;
 			max-height: 100%;
 		}
+		#headspace-mobile-orientation,
+		#headspace-mobile-fullscreen {
+			position: fixed;
+			z-index: 2147483647;
+			box-sizing: border-box;
+			font-family: Achron, Arial, sans-serif;
+			color: #fff;
+		}
+		#headspace-mobile-orientation {
+			inset: 0;
+			display: none;
+			align-items: center;
+			justify-content: center;
+			flex-direction: column;
+			gap: 18px;
+			padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+			background: radial-gradient(circle at 50% 42%, #123e65, #020711 68%);
+			text-align: center;
+		}
+		#headspace-mobile-orientation .phone-icon {font: 72px/1 Arial,sans-serif;transform: rotate(90deg);filter: drop-shadow(0 0 12px #45d7ff)}
+		#headspace-mobile-orientation strong {font-size: clamp(28px,8vw,48px);letter-spacing: 2px;text-shadow: 2px 0 #00ffc8,-2px 0 #ff2ab8}
+		#headspace-mobile-orientation span {font: 18px/1.35 Arial,sans-serif;color:#bceeff}
+		#headspace-mobile-fullscreen {
+			display: none;
+			left: 50%;
+			bottom: max(12px, env(safe-area-inset-bottom));
+			transform: translateX(-50%);
+			min-width: 210px;
+			min-height: 48px;
+			padding: 8px 18px;
+			border: 2px solid #45d7ff;
+			border-radius: 10px;
+			background: rgba(1,9,20,.92);
+			box-shadow: 0 0 16px rgba(69,215,255,.75);
+			font-size: 16px;
+		}
         
 	</style>
     <!-- Libs and GDJS core files : -->
@@ -283,7 +319,7 @@
 	<script src="multiplayer-setup.js?v=20260903-private-rooms-3" crossorigin="anonymous"></script>
 	<script src="headspace-multiplayer-framework.js?v=20260812-m6-celestial-7" crossorigin="anonymous"></script>
 	<script src="headspace-multiplayer-levels.js?v=20260817-m9-moving-shadow-lights-49" crossorigin="anonymous"></script>
-    <script src="headspace-runtime-patch.js?v=20260903-private-rooms-4" crossorigin="anonymous"></script>
+    <script src="headspace-runtime-patch.js?v=20260909-mobile-layout-1" crossorigin="anonymous"></script>
 
 
 </head>
@@ -294,6 +330,38 @@
     (function() {
         var game = new gdjs.RuntimeGame(gdjs.projectData, {});
         window.headSpaceGame = game;
+
+		var orientationGate = document.createElement("div");
+		orientationGate.id = "headspace-mobile-orientation";
+		orientationGate.innerHTML = '<div class="phone-icon" aria-hidden="true">&#128241;</div><strong>ROTATE YOUR PHONE</strong><span>HEADNAUT plays in landscape mode.</span>';
+		document.body.appendChild(orientationGate);
+		var fullscreenButton = document.createElement("button");
+		fullscreenButton.id = "headspace-mobile-fullscreen";
+		fullscreenButton.type = "button";
+		fullscreenButton.textContent = "TAP FOR FULLSCREEN";
+		document.body.appendChild(fullscreenButton);
+		var isTouchDevice = navigator.maxTouchPoints > 0 || window.matchMedia("(pointer: coarse)").matches;
+		var updateMobilePresentation = function () {
+			var viewport = window.visualViewport;
+			var width = viewport ? viewport.width : window.innerWidth;
+			var height = viewport ? viewport.height : window.innerHeight;
+			var portrait = height > width;
+			orientationGate.style.display = isTouchDevice && portrait ? "flex" : "none";
+			fullscreenButton.style.display = isTouchDevice && !portrait && !document.fullscreenElement ? "block" : "none";
+		};
+		fullscreenButton.addEventListener("click", async function (event) {
+			event.preventDefault();
+			event.stopPropagation();
+			try {
+				await document.documentElement.requestFullscreen?.({ navigationUI: "hide" });
+				await window.screen?.orientation?.lock?.("landscape");
+			} catch (error) {
+				// Some mobile browsers only hide their chrome after a scroll or do
+				// not expose the fullscreen API. The responsive canvas still works.
+			}
+			updateMobilePresentation();
+		});
+		document.addEventListener("fullscreenchange", updateMobilePresentation);
 
 		// Mobile browser chrome changes the usable viewport independently from
 		// window.innerHeight. Notify GDevelop after both viewport resizing and
@@ -306,6 +374,7 @@
 				document.documentElement.style.height = "100dvh";
 				document.body.style.height = "100dvh";
 				game.onWindowInnerSizeChanged();
+				updateMobilePresentation();
 			}, 80);
 		};
 		window.addEventListener("resize", refitGameToMobileViewport, { passive: true });
@@ -315,6 +384,7 @@
 		}, { passive: true });
 		window.visualViewport?.addEventListener("resize", refitGameToMobileViewport, { passive: true });
 		window.screen?.orientation?.addEventListener?.("change", refitGameToMobileViewport);
+		updateMobilePresentation();
 
         var launchParams = new URLSearchParams(window.location.search);
         try {
