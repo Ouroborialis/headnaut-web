@@ -9,18 +9,17 @@
   const TOUCH_HINT_ID = "headSpaceTouchHint";
   const PAUSE_OVERLAY_ID = "headSpacePauseOverlay";
   const COMPLETION_FILTER_KEY = "__headSpaceCompletionFilter";
-  const PAUSE_BUTTON_ASSET = "assets/Grey Button2.png";
   const BEST_TIMES_KEY = "head-space-best-times-v1";
   const CUSTOM_PLAYER_KEY = "head-space-custom-player-v1";
   const CUSTOM_PLAYER_LIBRARY_KEY = "head-space-custom-player-library-v1";
   const CUSTOM_PLAYER_ACTIVE_KEY = "head-space-custom-player-active-v1";
   const CUSTOM_PLAYER_CREATOR_ID = "headSpaceCustomPlayerCreator";
-  const PAUSE_MENU_BUTTON_WIDTH_PX = 560;
-  const PAUSE_MENU_BUTTON_MAX_WIDTH_VW = 76;
-  const PAUSE_MENU_BUTTON_HEIGHT_PX = 228;
-  const PAUSE_MENU_BUTTON_MARGIN_Y_PX = 14;
-  const PAUSE_MENU_BUTTON_FONT_SIZE_PX = 56;
-  const PAUSE_MENU_BUTTON_WIDE_FONT_SIZE_PX = 48;
+  const PAUSE_MENU_BUTTON_WIDTH_PX = 380;
+  const PAUSE_MENU_BUTTON_MAX_WIDTH_VW = 78;
+  const PAUSE_MENU_BUTTON_HEIGHT_PX = 64;
+  const PAUSE_MENU_BUTTON_MARGIN_Y_PX = 4;
+  const PAUSE_MENU_BUTTON_FONT_SIZE_PX = 25;
+  const PAUSE_MENU_BUTTON_WIDE_FONT_SIZE_PX = 22;
 
   const PLAYABLE_LEVEL_MIN = 1;
   const PLAYABLE_LEVEL_MAX = 12;
@@ -1447,31 +1446,27 @@
     button.textContent = label;
     button.style.width = `min(${PAUSE_MENU_BUTTON_WIDTH_PX}px, 72vw)`;
     button.style.maxWidth = `${PAUSE_MENU_BUTTON_MAX_WIDTH_VW}vw`;
-    button.style.height = `clamp(58px, 10vh, ${PAUSE_MENU_BUTTON_HEIGHT_PX}px)`;
+    button.style.height = `clamp(42px, 8.5vh, ${PAUSE_MENU_BUTTON_HEIGHT_PX}px)`;
     button.style.margin = `clamp(2px, 0.5vh, ${PAUSE_MENU_BUTTON_MARGIN_Y_PX}px) 0`;
-    button.style.padding = "0 clamp(22px, 5vw, 64px) clamp(2px, 1.5vh, 12px)";
-    button.style.border = "none";
-    button.style.backgroundColor = "transparent";
-    button.style.backgroundImage = `url("${PAUSE_BUTTON_ASSET}")`;
-    button.style.backgroundRepeat = "no-repeat";
-    button.style.backgroundPosition = "center";
-    button.style.backgroundSize = "100% 100%";
-    button.style.boxShadow = "0 14px 34px rgba(0,0,0,0.42)";
+    button.style.padding = "0 clamp(18px, 4vw, 38px)";
+    button.style.border = "2px solid #45d7ff";
+    button.style.borderRadius = "9px";
+    button.style.background = "linear-gradient(180deg, rgba(8,32,54,.96), rgba(1,10,23,.98))";
+    button.style.boxShadow = "inset 0 0 15px rgba(69,215,255,.14), 0 0 12px rgba(69,215,255,.25), 0 8px 18px rgba(0,0,0,.4)";
     button.style.color = "#ffffff";
     button.style.cursor = "pointer";
     button.style.fontFamily = `${HEADNAUT_DOM_FONT_FAMILY}, sans-serif`;
     button.style.fontSize =
       action === "level-select"
-        ? `clamp(18px, 3.1vh, ${PAUSE_MENU_BUTTON_WIDE_FONT_SIZE_PX}px)`
-        : `clamp(20px, 3.7vh, ${PAUSE_MENU_BUTTON_FONT_SIZE_PX}px)`;
-    button.style.letterSpacing = "1.5px";
+        ? `clamp(14px, 3vh, ${PAUSE_MENU_BUTTON_WIDE_FONT_SIZE_PX}px)`
+        : `clamp(16px, 3.4vh, ${PAUSE_MENU_BUTTON_FONT_SIZE_PX}px)`;
+    button.style.letterSpacing = "1.8px";
     button.style.lineHeight = "1.05";
     button.style.textAlign = "center";
     button.style.display = "flex";
     button.style.alignItems = "center";
     button.style.justifyContent = "center";
-    button.style.textShadow =
-      "3px 0 #00ffc8, -3px 0 #ff2ab8, 0 4px 0 rgba(0,0,0,0.78), 0 0 12px rgba(255,255,255,0.7)";
+    button.style.textShadow = "1px 0 #00ffc8, -1px 0 #ff2ab8, 0 0 8px rgba(255,255,255,.55)";
     button.style.textTransform = "uppercase";
     button.style.transition = "transform 120ms ease, filter 120ms ease, box-shadow 120ms ease";
     return button;
@@ -1497,7 +1492,7 @@
     overlay.style.alignItems = "center";
     overlay.style.justifyContent = "center";
     overlay.style.flexDirection = "column";
-    overlay.style.gap = "clamp(2px, 0.7vh, 10px)";
+    overlay.style.gap = "clamp(1px, 0.5vh, 5px)";
     overlay.style.background =
       "radial-gradient(circle at 50% 42%, rgba(16, 34, 66, 0.78), rgba(0, 0, 0, 0.9) 62%, rgba(0,0,0,0.96) 100%)";
     overlay.style.backdropFilter = "blur(2px)";
@@ -1508,10 +1503,10 @@
 
     const title = document.createElement("div");
     title.textContent = "PAUSED";
-    title.style.marginBottom = "clamp(5px, 1.4vh, 18px)";
+    title.style.marginBottom = "clamp(3px, 1vh, 10px)";
     title.style.color = "#ffffff";
     title.style.fontFamily = `${HEADNAUT_DOM_FONT_FAMILY}, sans-serif`;
-    title.style.fontSize = "clamp(48px, 12vh, 152px)";
+    title.style.fontSize = "clamp(38px, 9vh, 88px)";
     title.style.letterSpacing = "8px";
     title.style.textShadow =
       "5px 0 #00ffc8, -5px 0 #ff2ab8, 0 6px 0 rgba(0,0,0,0.9), 0 0 32px rgba(100,215,255,0.62)";
@@ -1543,14 +1538,14 @@
       const button = event.target.closest("button[data-action]");
       if (!button) return;
       button.style.filter = "brightness(1.22)";
-      button.style.boxShadow = "0 0 28px rgba(78, 206, 255, 0.7), 0 16px 34px rgba(0,0,0,0.48)";
+      button.style.boxShadow = "inset 0 0 18px rgba(69,215,255,.25), 0 0 22px rgba(78,206,255,.68), 0 10px 20px rgba(0,0,0,.45)";
     });
     overlay.addEventListener("pointerout", (event) => {
       const button = event.target.closest("button[data-action]");
       if (!button) return;
       button.style.filter = "brightness(1)";
       button.style.transform = "scale(1)";
-      button.style.boxShadow = "0 14px 34px rgba(0,0,0,0.42)";
+      button.style.boxShadow = "inset 0 0 15px rgba(69,215,255,.14), 0 0 12px rgba(69,215,255,.25), 0 8px 18px rgba(0,0,0,.4)";
     });
 
     document.body.appendChild(overlay);
