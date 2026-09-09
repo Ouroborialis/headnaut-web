@@ -2801,6 +2801,25 @@
       }
       if (homeButtons[0]) placeTextInsideButton(textObject, homeButtons[0]);
     }
+
+    // Level 5 was authored as a 228px-tall text box containing a leading
+    // newline. That makes its visible glyph drift independently of the round
+    // level marker as the canvas is scaled. Normalize the label and register
+    // it to the marker every frame, matching the other level buttons.
+    const levelFiveButton = runtimeScene.getObjects("Level5")[0];
+    const levelFiveLabel = runtimeScene.getObjects("LevelButtonText5")[0];
+    if (levelFiveButton && levelFiveLabel) {
+      if (levelFiveLabel.getString?.() !== "5") levelFiveLabel.setString?.("5");
+      if (levelFiveLabel.setTextAlignment) levelFiveLabel.setTextAlignment("center");
+      if (levelFiveLabel.setVerticalTextAlignment) {
+        levelFiveLabel.setVerticalTextAlignment("center");
+      }
+      setObjectCenter(
+        levelFiveLabel,
+        levelFiveButton.getCenterXInScene(),
+        levelFiveButton.getCenterYInScene()
+      );
+    }
   }
 
   function getSceneBoolean(runtimeScene, name) {
