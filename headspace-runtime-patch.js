@@ -1333,15 +1333,15 @@
     hud.style.position = "fixed";
     hud.style.top = "16px";
     hud.style.left = "16px";
-    hud.style.padding = "clamp(8px, 1vw, 12px) clamp(10px, 1.2vw, 16px)";
-    hud.style.borderRadius = "10px";
+    hud.style.padding = "clamp(6px, 0.65vw, 9px) clamp(8px, 0.8vw, 12px)";
+    hud.style.borderRadius = "8px";
     hud.style.background = "rgba(0, 0, 0, 0.72)";
     hud.style.border = "1px solid rgba(255, 255, 255, 0.42)";
     hud.style.color = "#FFFFFF";
     hud.style.fontFamily = "Achron, Arial, sans-serif";
-    hud.style.fontSize = "clamp(20px, 1.7vw, 32px)";
-    hud.style.lineHeight = "1.12";
-    hud.style.letterSpacing = "1px";
+    hud.style.fontSize = "clamp(16px, 1.1vw, 21px)";
+    hud.style.lineHeight = "1.08";
+    hud.style.letterSpacing = "0.7px";
     hud.style.maxWidth = "calc(100vw - 190px)";
     hud.style.whiteSpace = "pre-line";
     hud.style.pointerEvents = "none";
@@ -1669,11 +1669,11 @@
       hud.style.maxWidth = "48vw";
       hud.style.borderRadius = "7px";
     } else {
-      hud.style.padding = "clamp(8px, 1vw, 12px) clamp(10px, 1.2vw, 16px)";
-      hud.style.fontSize = "clamp(20px, 1.7vw, 32px)";
-      hud.style.lineHeight = "1.12";
+      hud.style.padding = "clamp(6px, 0.65vw, 9px) clamp(8px, 0.8vw, 12px)";
+      hud.style.fontSize = "clamp(16px, 1.1vw, 21px)";
+      hud.style.lineHeight = "1.08";
       hud.style.maxWidth = "calc(100vw - 190px)";
-      hud.style.borderRadius = "10px";
+      hud.style.borderRadius = "8px";
     }
     const measuredHudRect = hud.getBoundingClientRect();
     const buttonSize = Math.round(mobileLandscape ? clamp(window.innerHeight * 0.12, 38, 58) : clamp(measuredHudRect.height * 0.46, 48, 150));
