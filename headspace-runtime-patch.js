@@ -9163,9 +9163,6 @@
   }
 
   function getLevelFiveBoostWarp(elapsedSeconds, phaseObject) {
-    // Use a monotonic launch-progress pulse. A sine wave can be sampled at
-    // symmetric points on adjacent frames, which made a real boost look static
-    // to validation even though its frame-to-frame scale was changing.
     const startedAt = Number(phaseObject?.__headSpaceBoostStartedAtSeconds);
     const progress = Number.isFinite(startedAt)
       ? clamp(
@@ -9174,8 +9171,35 @@
           1
         )
       : 0;
-    const uniformPulse = 1.02 + progress * 0.055;
-    return { stretchX: uniformPulse, stretchY: uniformPulse, rotationRadians: 0 };
+    // Ease the deformation in and out so the actor feels rubbery rather than
+    // snapping between its normal and boosted silhouettes. The asymmetric
+    // harmonics make the nose/tail axis visibly flex while it travels.
+    const envelope = Math.sin(progress * Math.PI);
+    const rubberWave = Math.sin(progress * Math.PI * 3.25);
+    const stretchX = 1 + envelope * (0.48 + rubberWave * 0.075);
+    const stretchY = 1 - envelope * (0.2 - rubberWave * 0.045);
+    const directionX = Number(phaseObject?.__headSpaceBoostDirectionX);
+    const directionY = Number(phaseObject?.__headSpaceBoostDirectionY);
+    const launchAngle = Number.isFinite(directionX) && Number.isFinite(directionY)
+      ? Math.atan2(directionY, directionX)
+      : 0;
+    const objectAngle = (Number(phaseObject?.getAngle?.()) || 0) * Math.PI / 180;
+    const rotationRadians = Math.atan2(
+      Math.sin(launchAngle - objectAngle),
+      Math.cos(launchAngle - objectAngle)
+    );
+    return { stretchX, stretchY, rotationRadians };
+  }
+
+  function getBoostablePhysicsActors(runtimeScene) {
+    const allInstances = runtimeScene?.getAdhocListOfAllInstances?.() || [];
+    return allInstances.filter((actor) => {
+      if (!actor?.hasBehavior?.("Physics2") || actor.getWidth?.() <= 0 || actor.getHeight?.() <= 0) {
+        return false;
+      }
+      const physics = actor.getBehavior("Physics2");
+      return typeof physics.isDynamic !== "function" || physics.isDynamic();
+    });
   }
 
   function clearPlayerCosmeticBoostWarp(player) {
@@ -9495,9 +9519,7 @@
     let lightningPlayer = null;
     let lightningPad = null;
     let playerBoostEnded = false;
-    const actors = ["Player", "Enemy", "SmartEnemy", "EmittedMaterial"].flatMap((name) =>
-      runtimeScene.getObjects(name)
-    );
+    const actors = getBoostablePhysicsActors(runtimeScene);
 
     for (const actor of actors) {
       if (!actor?.hasBehavior?.("Physics2") || actor.getWidth() <= 0) continue;
@@ -9651,9 +9673,7 @@
     let lightningPlayer = null;
     let lightningPad = null;
     let playerBoostEnded = false;
-    const actors = ["Player", "Enemy", "SmartEnemy", "EmittedMaterial"].flatMap((name) =>
-      runtimeScene.getObjects(name)
-    );
+    const actors = getBoostablePhysicsActors(runtimeScene);
 
     for (const actor of actors) {
       if (!actor?.hasBehavior?.("Physics2") || actor.getWidth() <= 0) continue;
@@ -9844,9 +9864,7 @@
       !hasSharedBoosts
     ) return;
     if (hasSharedBoosts) {
-      const sharedActors = ["Player", "Enemy", "SmartEnemy", "EmittedMaterial"].flatMap((name) =>
-        runtimeScene.getObjects(name)
-      );
+      const sharedActors = getBoostablePhysicsActors(runtimeScene);
       for (const actor of sharedActors) {
         if (!actor?.hasBehavior?.("Physics2") || actor.getWidth() <= 0) continue;
         const pad = sharedSystem.boosts.find(
