@@ -955,6 +955,7 @@
   }
   let pendingPauseMenuNavigation = null;
   let openMultiplayerSetupAfterNavigation = false;
+  let pendingRoomInvitation = /^[A-Z0-9]{6}$/i.test(new URL(location.href).searchParams.get("room") || "");
   let multiplayerSetupNavigationSourceScene = null;
   let multiplayerSelectionSnapshotAfterNavigation = null;
   let musicUnlockHandlersInstalled = false;
@@ -23044,6 +23045,14 @@
       syncInteractiveButtonGlow(runtimeScene);
       if (handleLevelSelectHomeButton(runtimeScene, level)) return;
       stripGameplayEntitiesForMenuScreens(runtimeScene);
+      if (Number(level) === 0 && pendingRoomInvitation && globalThis.HeadSpaceMultiplayerSetup?.open) {
+        pendingRoomInvitation = false;
+        requestAnimationFrame(() => {
+          if (activeRuntimeScene === runtimeScene && Number(getCurrentLevel(runtimeScene)) === 0 && !globalThis.HeadSpaceMultiplayerSetup.isOpen()) {
+            openMultiplayerSetup(runtimeScene);
+          }
+        });
+      }
       if (
         Number(level) === 0 &&
         openMultiplayerSetupAfterNavigation &&

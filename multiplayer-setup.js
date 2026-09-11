@@ -125,7 +125,7 @@
             <button class="mp-primary" data-create type="button">CREATE ROOM</button>
             <div class="mp-room-row"><input data-code aria-label="Room code" maxlength="6" autocomplete="off" placeholder="ROOM CODE"><button class="mp-join" data-join type="button">JOIN ROOM</button></div>
             <div class="mp-social"><button data-invite type="button" disabled>INVITE FRIENDS</button><button data-copy-code type="button" disabled>COPY ROOM CODE</button></div>
-            <p class="mp-note">Create a room and share its six-character code. Guests join here without leaving this screen.</p>
+            <p class="mp-note">Create a room and invite friends with a link or six-character code. Keep the host's game open while friends join.</p>
             <div class="mp-launch">
               <div class="mp-player-heading" data-player-heading>PLAYERS (1/4)</div>
               <div data-player-list><div class="mp-player"><div class="mp-player-avatar"><img data-player-character alt=""><img data-player-helmet alt=""></div><div><div class="mp-player-name">YOU</div><div class="mp-player-role">HOST · READY</div></div></div></div>
@@ -331,18 +331,36 @@
     const copyInvite = async codeOnly => {
       if (!room) return;
       const url = new URL(location.href);
+      // Invitations open the home lobby; preserve the release version only.
+      const version = url.searchParams.get("v");
+      url.search = "";
+      url.hash = "";
+      if (version) url.searchParams.set("v", version);
       url.searchParams.set("room", room.code);
-      const text = codeOnly ? room.code : `Join my HEADNAUT room ${room.code}: ${url}`;
+      const text = codeOnly ? room.code : url.href;
+      if (!codeOnly && typeof navigator.share === "function") {
+        try {
+          await navigator.share({ title: "HEADNAUT", text: `Join my HEADNAUT room ${room.code}`, url: url.href });
+          setStatus("Invitation shared. Keep this game open while your friend joins.");
+          return;
+        } catch (error) {
+          if (error?.name === "AbortError") return;
+        }
+      }
       try {
         await navigator.clipboard.writeText(text);
         setStatus(codeOnly ? `Room code ${room.code} copied.` : "Invitation copied. Send it to your friend.");
-      } catch { setStatus(`Share room code ${room.code} with your friend.`); }
+      } catch { setStatus(codeOnly ? `Share room code ${room.code} with your friend.` : `Copy and send this invitation: ${url.href}`); }
     };
     inviteButton.addEventListener("click", () => copyInvite(false));
     copyCodeButton.addEventListener("click", () => copyInvite(true));
     codeInput.addEventListener("input", () => { codeInput.value = codeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6); });
     const invitedCode = new URL(location.href).searchParams.get("room");
-    if (invitedCode) codeInput.value = invitedCode.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6);
+    const validInvitation = /^[A-Z0-9]{6}$/i.test(invitedCode || "");
+    if (validInvitation) {
+      codeInput.value = invitedCode.toUpperCase();
+      setStatus(`You were invited to room ${codeInput.value}. Select JOIN ROOM to connect.`);
+    }
     root.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         close();
@@ -370,7 +388,7 @@
     requestAnimationFrame(() => {
       if (!root.isConnected) return;
       fitSetupToViewport();
-      root.querySelector(".mp-back")?.focus();
+      (validInvitation ? joinButton : root.querySelector(".mp-back"))?.focus();
     });
   }
 
