@@ -2885,9 +2885,37 @@
       const label = runtimeScene.getObjects(`LevelButtonText${level}`)[0];
       if (!button || !label) continue;
       if (label.getString?.() !== String(level)) label.setString?.(String(level));
-      label.setTextAlignment?.("center");
-      label.setVerticalTextAlignment?.("center");
-      setObjectCenter(label, button.getCenterXInScene(), button.getCenterYInScene());
+      if (label.getTextAlignment?.() !== "center") label.setTextAlignment?.("center");
+      if (label.getVerticalTextAlignment?.() !== "top") label.setVerticalTextAlignment?.("top");
+      label.setWrapping?.(false);
+      const renderer = label.getRendererObject?.();
+      renderer?.updateText?.(true);
+      const texture = renderer?.texture;
+      const canvas = texture?.baseTexture?.resource?.source;
+      if (!canvas?.getContext) continue;
+      // Font line boxes include blank ascender/descender space. Register the
+      // opaque glyph pixels, not that box (or the authored leading newline).
+      const key = texture._updateID;
+      let ink = label.__headSpaceNumberInk;
+      if (!ink || ink.key !== key) {
+        const {width, height} = canvas;
+        const pixels = canvas.getContext("2d").getImageData(0, 0, width, height).data;
+        let minX = width, minY = height, maxX = -1, maxY = -1;
+        for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+          if (pixels[(y * width + x) * 4 + 3] < 128) continue;
+          minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+        }
+        if (maxX < 0) continue;
+        const resolution = texture.baseTexture.resolution || 1;
+        ink = label.__headSpaceNumberInk = {key,
+          x: (minX + maxX + 1) / (2 * resolution),
+          y: (minY + maxY + 1) / (2 * resolution)};
+      }
+      const x = (ink.x + (texture.trim?.x || 0) - renderer.anchor.x * texture.orig.width) * renderer.scale.x;
+      const y = (ink.y + (texture.trim?.y || 0) - renderer.anchor.y * texture.orig.height) * renderer.scale.y;
+      label.setPosition(label.getX() + button.getCenterXInScene() - renderer.x - x,
+        label.getY() + button.getCenterYInScene() - renderer.y - y);
     }
   }
 
@@ -8728,6 +8756,7 @@
     }
     restoreLevelFiveBoostWarpVisuals(system);
     clearActorComets(system);
+    runtimeScene.__headSpaceBoostShake?.cancel();
     for (const pad of system.pads || []) {
       removeLevelSevenRendererObject(runtimeScene, system.layerName || "", pad.sprite, false);
       removeLevelSevenRendererObject(runtimeScene, system.layerName || "", pad.graphic, true);
@@ -9305,6 +9334,21 @@
     system?.actorComets?.clear();
   }
 
+  function shakeViewForPlayerBoost(runtimeScene, player) {
+    if (player.getName?.() !== "Player") return;
+    const started = player.__headSpaceBoostStartedAtSeconds;
+    if (player.__headSpaceShakeBoostStarted === started) return;
+    player.__headSpaceShakeBoostStarted = started;
+    const canvas = document.querySelector("canvas");
+    if (!canvas?.animate) return;
+    runtimeScene.__headSpaceBoostShake?.cancel();
+    runtimeScene.__headSpaceBoostShake = canvas.animate([
+      {translate: "0px 0px"}, {translate: "-5px 3px"},
+      {translate: "4px -3px"}, {translate: "-3px -2px"},
+      {translate: "2px 2px"}, {translate: "-1px 1px"}, {translate: "0px 0px"}
+    ], {duration: 280, easing: "linear"});
+  }
+
   function updateBoostCometsAfterLayout(runtimeScene, system) {
     if (!system) return;
     const pads = system.pads || system.boosts || [];
@@ -9313,6 +9357,7 @@
     const actors = getBoostablePhysicsActors(runtimeScene);
     const active = actors.filter(actor => actor.__headSpaceBoostPhase === "launch" &&
       elapsed < actor.__headSpaceBoostUntilSeconds && actor.getWidth() > 0);
+    for (const actor of active) shakeViewForPlayerBoost(runtimeScene, actor);
     const primary = active.find(actor => actor.getName?.() === "Player") || active[0];
     const padFor = actor => pads.find(pad => pad.id === actor?.__headSpaceBoostPadId);
     drawLevelFiveBoostLightning(system, primary, padFor(primary), elapsed);
@@ -24319,6 +24364,7 @@
   gdjs.registerRuntimeScenePreEventsCallback(onScenePreEvents);
   gdjs.registerRuntimeSceneLoadedCallback(onSceneLoaded);
   gdjs.registerRuntimeSceneUnloadedCallback((runtimeScene) => {
+    runtimeScene.__headSpaceBoostShake?.cancel();
     clearActorComets(levelFiveBoostSystemState.get(runtimeScene));
     clearActorComets(runtimeScene.__headSpaceSharedDeclarativeMultiplayerSystem);
   });
