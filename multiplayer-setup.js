@@ -115,6 +115,38 @@
         #${ROOT_ID} .mp-friend{min-height:66px;border:2px dashed rgba(89,214,255,.46);border-radius:12px;display:flex;align-items:center;justify-content:center;color:#83cfe8;font:600 17px Segoe UI,sans-serif;background:rgba(0,0,0,.2)}
         @media(max-width:900px){#${ROOT_ID} .mp-header{grid-template-columns:120px 1fr 120px}#${ROOT_ID} .mp-grid{grid-template-columns:1fr}#${ROOT_ID} .mp-levels{grid-template-columns:repeat(3,minmax(0,1fr))}#${ROOT_ID} .mp-friends{grid-column:auto}}
         @media(max-width:480px){#${ROOT_ID} .mp-header{grid-template-columns:1fr}#${ROOT_ID} .mp-avatar{width:110px;height:110px}#${ROOT_ID} .mp-back{order:2}#${ROOT_ID} .mp-levels{grid-template-columns:repeat(2,minmax(0,1fr))}#${ROOT_ID} .mp-room-row,#${ROOT_ID} .mp-social{grid-template-columns:1fr}}
+        @media (orientation:landscape) and (max-height:600px){
+          #${ROOT_ID}{padding:8px max(12px,env(safe-area-inset-right)) 8px max(12px,env(safe-area-inset-left))}
+          #${ROOT_ID} .mp-shell{width:100%;height:100%;padding:10px;border-width:2px;border-radius:14px;display:flex;flex-direction:column}
+          #${ROOT_ID} .mp-header{grid-template-columns:90px 1fr 54px;gap:10px;margin-bottom:8px;flex:none}
+          #${ROOT_ID} h1{font-size:26px;letter-spacing:2px}
+          #${ROOT_ID} .mp-avatar{width:48px;height:48px}
+          #${ROOT_ID} .mp-back{order:0}
+          #${ROOT_ID} .mp-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;min-height:0;flex:1}
+          #${ROOT_ID} .mp-panel{min-width:0;overflow:auto;padding:10px;border-width:2px;border-radius:10px}
+          #${ROOT_ID} h2{font-size:18px;letter-spacing:1px;margin:0 0 8px}
+          #${ROOT_ID} button,#${ROOT_ID} input{min-height:40px;font-size:14px;padding:6px 8px;border-width:2px;border-radius:8px;letter-spacing:.3px}
+          #${ROOT_ID} .mp-levels{grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+          #${ROOT_ID} .mp-level{min-height:48px;font-size:22px;padding:2px}
+          #${ROOT_ID} .mp-level-number{min-width:32px;min-height:32px}
+          #${ROOT_ID} .mp-mode-title{margin:8px 0 6px;font-size:15px}
+          #${ROOT_ID} .mp-modes,#${ROOT_ID} .mp-social{gap:6px;grid-template-columns:1fr 1fr}
+          #${ROOT_ID} .mp-actions{display:flex;flex-direction:column;gap:8px}
+          #${ROOT_ID} .mp-actions>*{flex-shrink:0}
+          #${ROOT_ID} .mp-actions h2{margin-bottom:0}
+          #${ROOT_ID} .mp-room-row{grid-template-columns:minmax(0,1fr) auto;gap:6px}
+          #${ROOT_ID} input{min-width:0;font-size:16px}
+          #${ROOT_ID} .mp-note{font-size:13px;line-height:1.35;color:#bceeff}
+          #${ROOT_ID} .mp-launch{margin-top:0;padding:8px}
+          #${ROOT_ID} .mp-player-heading{font-size:14px;margin-bottom:6px}
+          #${ROOT_ID} .mp-player{min-height:42px;padding:4px 6px;gap:8px}
+          #${ROOT_ID} .mp-player-avatar{width:34px;height:34px;flex-basis:34px}
+          #${ROOT_ID} .mp-player-name{font-size:14px}
+          #${ROOT_ID} .mp-player-role{font-size:12px}
+          #${ROOT_ID} .mp-launch-row{grid-template-columns:minmax(0,1fr) 80px;gap:6px}
+          #${ROOT_ID} .mp-status{min-height:40px;font-size:13px;padding:6px}
+          #${ROOT_ID} [data-start]{font-size:16px}
+        }
       </style>
       <main class="mp-shell">
         <header class="mp-header"><button class="mp-back" type="button">BACK</button><h1>MULTIPLAYER</h1><div class="mp-avatar" aria-label="Selected player"><img data-character alt=""><img data-helmet alt=""></div></header>
@@ -151,6 +183,9 @@
     shell.style.transformOrigin = "top center";
     const fitSetupToViewport = () => {
       shell.style.transform = "none";
+      // Short landscape screens use readable columns and panel scrolling, not
+      // a tall desktop dialog shrunk down to fit the phone's height.
+      if (window.matchMedia("(orientation:landscape) and (max-height:600px)").matches) return;
       const rootStyle = getComputedStyle(root);
       const availableWidth =
         window.innerWidth - parseFloat(rootStyle.paddingLeft) - parseFloat(rootStyle.paddingRight);
