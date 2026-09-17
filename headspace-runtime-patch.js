@@ -2615,13 +2615,17 @@
           ) * 0.25;
           float brightness = light(color.rgb);
           // Local contrast isolates small star cores; broad nebula light stays steady.
-          float star = smoothstep(0.035, 0.20, brightness - nearby)
-            * smoothstep(0.28, 0.80, brightness);
+          float star = smoothstep(0.015, 0.10, brightness - nearby)
+            * smoothstep(0.18, 0.60, brightness);
           vec2 cell = floor(uv * inputSize.xy / 12.0);
           float seed = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 437.58);
-          float wave = sin(twinkleTime * (0.9 + seed * 1.1) + seed * 6.28318)
-            * 0.7 + sin(twinkleTime * 0.61 + seed * 19.0) * 0.3;
-          color.rgb *= 1.0 + star * wave * 0.24;
+          float wave = sin(twinkleTime * (1.8 + seed * 1.4) + seed * 6.28318)
+            * 0.7 + sin(twinkleTime * 1.13 + seed * 19.0) * 0.3;
+          // Visible dimming matters: white stars cannot brighten much before
+          // clipping. A deep trough and brief glint make twinkle readable in motion.
+          color.rgb *= 1.0 + star * wave * 0.85;
+          float glint = pow(max(wave, 0.0), 6.0) * star;
+          color.rgb += vec3(0.35, 0.42, 0.50) * glint * color.a;
           gl_FragColor = color;
         }
       `, {twinkleTime: 0});
