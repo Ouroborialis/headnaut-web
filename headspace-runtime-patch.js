@@ -2879,23 +2879,15 @@
       if (homeButtons[0]) placeTextInsideButton(textObject, homeButtons[0]);
     }
 
-    // Level 5 was authored as a 228px-tall text box containing a leading
-    // newline. That makes its visible glyph drift independently of the round
-    // level marker as the canvas is scaled. Normalize the label and register
-    // it to the marker every frame, matching the other level buttons.
-    const levelFiveButton = runtimeScene.getObjects("Level5")[0];
-    const levelFiveLabel = runtimeScene.getObjects("LevelButtonText5")[0];
-    if (levelFiveButton && levelFiveLabel) {
-      if (levelFiveLabel.getString?.() !== "5") levelFiveLabel.setString?.("5");
-      if (levelFiveLabel.setTextAlignment) levelFiveLabel.setTextAlignment("center");
-      if (levelFiveLabel.setVerticalTextAlignment) {
-        levelFiveLabel.setVerticalTextAlignment("center");
-      }
-      setObjectCenter(
-        levelFiveLabel,
-        levelFiveButton.getCenterXInScene(),
-        levelFiveButton.getCenterYInScene()
-      );
+    // Normalize authored whitespace and center every number on its marker.
+    for (let level = 1; level <= 12; level++) {
+      const button = runtimeScene.getObjects(`Level${level}`)[0];
+      const label = runtimeScene.getObjects(`LevelButtonText${level}`)[0];
+      if (!button || !label) continue;
+      if (label.getString?.() !== String(level)) label.setString?.(String(level));
+      label.setTextAlignment?.("center");
+      label.setVerticalTextAlignment?.("center");
+      setObjectCenter(label, button.getCenterXInScene(), button.getCenterYInScene());
     }
   }
 
@@ -3418,9 +3410,7 @@
   function updateHud(runtimeScene, level, elapsedSeconds, bestSeconds) {
     const hud = ensureHud();
     const objective = getWinObjectiveLabel(Number(level), runtimeScene);
-    hud.textContent = isTouchLandscapeViewport()
-      ? `LEVEL ${level}  ·  TIME ${formatTime(elapsedSeconds)}  ·  BEST ${formatTime(bestSeconds)}\nGOAL: ${objective}`
-      : `LEVEL ${level}\nTIME ${formatTime(elapsedSeconds)}\nBEST ${formatTime(bestSeconds)}\nTO WIN: ${objective}`;
+    hud.textContent = `LEVEL ${level}\nTIME ${formatTime(elapsedSeconds)}\nBEST ${formatTime(bestSeconds)}\nGOAL: ${objective}`;
   }
 
   function setRuntimeTimeScale(runtimeScene, scale) {
@@ -8737,6 +8727,7 @@
       return;
     }
     restoreLevelFiveBoostWarpVisuals(system);
+    clearActorComets(system);
     for (const pad of system.pads || []) {
       removeLevelSevenRendererObject(runtimeScene, system.layerName || "", pad.sprite, false);
       removeLevelSevenRendererObject(runtimeScene, system.layerName || "", pad.graphic, true);
@@ -9209,6 +9200,7 @@
     player.__headSpaceCosmeticBoostStretchX = 1;
     player.__headSpaceCosmeticBoostStretchY = 1;
     player.__headSpaceCosmeticBoostRotationRadians = 0;
+    player.__headSpaceBoostConeAmount = 0;
   }
 
   function applyLevelFiveBoostWarpVisual(system, object, elapsedSeconds, phaseObject = object) {
@@ -9265,11 +9257,13 @@
   function applyLevelFiveBoostActorWarpVisual(runtimeScene, system, actor, elapsedSeconds) {
     const actorName = actor?.getName?.() || "";
     if (actorName === "Player") {
-      const warp = getLevelFiveBoostWarp(elapsedSeconds, actor);
       actor.__headSpaceCosmeticBoostActive = true;
-      actor.__headSpaceCosmeticBoostStretchX = warp.stretchX;
-      actor.__headSpaceCosmeticBoostStretchY = warp.stretchY;
-      actor.__headSpaceCosmeticBoostRotationRadians = warp.rotationRadians;
+      const progress = clamp((elapsedSeconds - actor.__headSpaceBoostStartedAtSeconds) /
+        LEVEL_FIVE_BOOST_DURATION_SECONDS, 0, 1);
+      actor.__headSpaceBoostConeAmount = Math.min(1, progress / 0.08, (1 - progress) / 0.18);
+      actor.__headSpaceCosmeticBoostStretchX = 1;
+      actor.__headSpaceCosmeticBoostStretchY = 1;
+      actor.__headSpaceCosmeticBoostRotationRadians = 0;
       return;
     }
     const companionName =
@@ -9292,6 +9286,55 @@
       applyLevelFiveBoostWarpVisual(system, companion, elapsedSeconds, actor);
     } else {
       applyLevelFiveBoostWarpVisual(system, actor, elapsedSeconds);
+    }
+  }
+
+  function disposeActorComet(effect) {
+    const particleRenderer = effect.cometParticleEmitter?.getRendererObject?.();
+    for (const renderer of [effect.lightningGraphic, effect.lightningOverlayGraphic, particleRenderer]) {
+      if (renderer) effect.layerRenderer.removeRendererObject(renderer);
+    }
+    effect.cometParticleEmitter?.destroy?.();
+    for (const renderer of [effect.lightningGraphic, effect.lightningOverlayGraphic, particleRenderer]) {
+      if (renderer && !renderer.destroyed) renderer.destroy({children: true});
+    }
+  }
+
+  function clearActorComets(system) {
+    for (const effect of system?.actorComets?.values() || []) disposeActorComet(effect);
+    system?.actorComets?.clear();
+  }
+
+  function updateBoostCometsAfterLayout(runtimeScene, system) {
+    if (!system) return;
+    const pads = system.pads || system.boosts || [];
+    if (!pads.length) return;
+    const elapsed = Number(system.__headSpaceBoostElapsedSeconds) || 0;
+    const actors = getBoostablePhysicsActors(runtimeScene);
+    const active = actors.filter(actor => actor.__headSpaceBoostPhase === "launch" &&
+      elapsed < actor.__headSpaceBoostUntilSeconds && actor.getWidth() > 0);
+    const primary = active.find(actor => actor.getName?.() === "Player") || active[0];
+    const padFor = actor => pads.find(pad => pad.id === actor?.__headSpaceBoostPadId);
+    drawLevelFiveBoostLightning(system, primary, padFor(primary), elapsed);
+    if (!system.actorComets) system.actorComets = new Map();
+    for (const actor of active) {
+      if (actor === primary) continue;
+      let effect = system.actorComets.get(actor);
+      if (!effect) {
+        const layerName = actor.getLayer?.() || "";
+        const layerRenderer = runtimeScene.getLayer(layerName).getRenderer();
+        effect = { runtimeScene, layerName, layerRenderer,
+          lightningGraphic: new PIXI.Graphics(), lightningOverlayGraphic: new PIXI.Graphics() };
+        layerRenderer.addRendererObject(effect.lightningGraphic, 0);
+        layerRenderer.addRendererObject(effect.lightningOverlayGraphic, 0);
+        system.actorComets.set(actor, effect);
+      }
+      drawLevelFiveBoostLightning(effect, actor, padFor(actor), elapsed);
+    }
+    for (const [actor, effect] of system.actorComets) {
+      if (active.includes(actor) && actor !== primary) continue;
+      disposeActorComet(effect);
+      system.actorComets.delete(actor);
     }
   }
 
@@ -9375,14 +9418,19 @@
     // Every tail plume starts at its rear edge rather than cutting across the
     // player centre.
     const headRadius = Math.max(34, compositeRadius * 1.16);
-    const tailLength = Math.max(118, compositeRadius * 3.1);
+    const physics = player.getBehavior?.("Physics2");
+    const speed = Math.hypot(Number(physics?.getLinearVelocityX?.()) || 0,
+      Number(physics?.getLinearVelocityY?.()) || 0);
+    const speedAmount = clamp(speed / 1600, 0, 1);
+    const tailLength = compositeRadius * (4.5 + speedAmount * 4);
+    const bend = Math.sin(elapsedSeconds * 13) * compositeRadius * 0.32;
     const tailSpread = Math.max(30, compositeRadius * 0.7);
     const pulse = 1 + Math.sin(elapsedSeconds * 11) * 0.045;
     const tailRootX = -headRadius * 0.12;
 
     if (cometParticleEmitter?.configure) {
       const launchDegrees = (launchAngle * 180) / Math.PI;
-      const boostKey = `${pad.id ?? "boost"}:${player.__headSpaceBoostStartedAtSeconds ?? elapsedSeconds}`;
+      const boostKey = `${getAbsorbFlashObjectKey(player)}:${pad.id ?? "boost"}:${player.__headSpaceBoostStartedAtSeconds ?? elapsedSeconds}`;
       if (system.cometParticleBoostKey !== boostKey) {
         cometParticleEmitter.clear?.();
         system.cometParticleBoostKey = boostKey;
@@ -9452,19 +9500,40 @@
       }
     };
     if (tailGraphic) {
-      // Particle plumes provide the main visual statement. These soft guide
-      // strokes only preserve a little direction at a distance.
-      drawTaperedCometTail(tailLength, tailSpread * pulse, 0x276f86, 0.075, tailSpread * 1.15, tailSpread * 0.13);
-      drawTaperedCometTail(tailLength * 0.76, tailSpread * 0.58 * pulse, 0x4cc9cf, 0.1, tailSpread * 0.58, tailSpread * 0.075);
+      // A bright rounded head opens into a curved, feathered dust cone.
+      // All layers stay behind the complete native cosmetic composite.
+      for (let layer = 0; layer < 7; layer += 1) {
+        const spread = compositeRadius * (1.55 - layer * 0.13);
+        const length = tailLength * (1 - layer * 0.055);
+        tailGraphic.beginFill(layer < 3 ? 0x249dff : 0x98f8ff, 0.10 + layer * 0.022);
+        tailGraphic.moveTo(compositeRadius * 1.05, 0);
+        tailGraphic.bezierCurveTo(compositeRadius, -spread,
+          -length * 0.35, -spread + bend, -length, bend * 2 - spread * 0.6);
+        tailGraphic.bezierCurveTo(-length * 0.7, bend,
+          -length * 0.4, spread + bend, 0, spread * 0.8);
+        tailGraphic.quadraticCurveTo(compositeRadius * 1.1, spread * 0.5,
+          compositeRadius * 1.05, 0);
+        tailGraphic.endFill();
+      }
+      for (let strand = 0; strand < 15; strand += 1) {
+        const fan = (strand / 14 - 0.5) * compositeRadius * 2.2;
+        drawTaperedCometTail(tailLength * (0.65 + 0.35 * Math.sin(strand * 7) ** 2),
+          fan, strand % 3 ? 0x75eaff : 0xffffff, 0.55,
+          compositeRadius * (strand % 3 ? 0.07 : 0.12), fan + bend);
+      }
     }
     if (coronaGraphic) {
-      // A very faint bloom lies above the whole native composite. It is sized
-      // from the helmet and blurred, so it reads as light on the astronaut,
-      // not as an outlined force-field.
-      coronaGraphic.beginFill(0x72f3db, 0.115);
-      coronaGraphic.drawCircle(0, 0, compositeRadius * 1.16 * pulse);
-      coronaGraphic.endFill();
+      for (let spark = 0; spark < 18; spark += 1) {
+        const age = (elapsedSeconds * 2.8 + spark / 18) % 1;
+        const x = -compositeRadius * 1.15 - age * tailLength * 0.85;
+        const y = Math.sin(spark * 13.7) * compositeRadius * (0.45 + age * 0.65) + bend * age;
+        coronaGraphic.lineStyle(1.5 + (1 - age) * 1.5, spark % 3 ? 0xafffff : 0xffffff, (1 - age) * 0.9);
+        coronaGraphic.moveTo(x, y);
+        coronaGraphic.lineTo(x + compositeRadius * (0.12 + speedAmount * 0.18), y);
+      }
     }
+    // No filled circle above the face: the luminous leading edge belongs to
+    // the plume behind the helmet, eliminating the old translucent bubble.
   }
 
   function getStandardBoostTriggerCenter(pad) {
@@ -9625,7 +9694,7 @@
       lightningPlayer = null;
       lightningPad = null;
     }
-    drawLevelFiveBoostLightning(system, lightningPlayer, lightningPad, elapsedSeconds);
+    // Comets are rendered from final actor positions after companion layout.
 
     const flashAmount =
       0.5 - Math.cos(elapsedSeconds * Math.PI * 2 * LEVEL_FIVE_BOOST_FLASH_HZ) * 0.5;
@@ -9843,7 +9912,7 @@
       );
     }
 
-    drawLevelFiveBoostLightning(system, lightningPlayer, lightningPad, elapsedSeconds);
+    // Comets are rendered from final actor positions after companion layout.
     const flashAmount =
       0.5 - Math.cos(elapsedSeconds * Math.PI * 2 * LEVEL_FIVE_BOOST_FLASH_HZ) * 0.5;
     const flashColor = interpolateLevelNineBlackHoleTint(0x21bfff, 0xffef35, flashAmount);
@@ -21392,17 +21461,11 @@
       // ratio instead of enlarging the whole composite beyond collision.
       const helmetDiameter = bodyDiameter;
       const nativeImageDiameter = helmetDiameter / NATIVE_HELMET_COVER_SCALE;
-      const boostActive = player.__headSpaceCosmeticBoostActive === true;
-      const stretchX = boostActive
-        ? clamp(Number(player.__headSpaceCosmeticBoostStretchX) || 1, 0.35, 2.25)
-        : 1;
-      const stretchY = boostActive
-        ? clamp(Number(player.__headSpaceCosmeticBoostStretchY) || 1, 0.35, 2.25)
-        : 1;
-      const boostRotationDegrees = boostActive
-        ? (Number(player.__headSpaceCosmeticBoostRotationRadians) || 0) * 180 / Math.PI
-        : 0;
-      const compositeAngle = (Number(player.getAngle?.()) || 0) + boostRotationDegrees;
+      // Keep both authored objects upright and collision-sized; the final
+      // shared shader bends their visible artwork together during boost.
+      const stretchX = 1;
+      const stretchY = 1;
+      const compositeAngle = 0;
       // Decide from this companion's actual renderer, not the global carousel
       // state. Scene changes can briefly leave customPlayerActive stale while a
       // native animation frame is already installed (observed on multiplayer
@@ -21482,6 +21545,69 @@
     }
   }
 
+  // Shared screen-space inverse warp: both authored layers sample the same
+  // curved cone without rotating the upright artwork or altering Physics2.
+  function updatePlayerBoostCone(player, imageRenderer, helmetRenderer) {
+    const active = player.__headSpaceCosmeticBoostActive === true;
+    const bounds = helmetRenderer.getBounds();
+    const radius = Math.max(1, bounds.width * 0.5);
+    const directionX = Number(player.__headSpaceBoostDirectionX) || 0;
+    const directionY = Number(player.__headSpaceBoostDirectionY) || 0;
+    const directionLength = Math.hypot(directionX, directionY) || 1;
+    const amount = active ? clamp(Number(player.__headSpaceBoostConeAmount) || 0, 0, 1) : 0;
+    for (const renderer of [imageRenderer, helmetRenderer]) {
+      let filter = renderer.__headSpaceBoostConeFilter;
+      if (!active) {
+        if (filter) {
+          renderer.filters = (renderer.filters || []).filter((item) => item !== filter);
+          filter.destroy();
+          delete renderer.__headSpaceBoostConeFilter;
+        }
+        continue;
+      }
+      if (!filter) {
+        filter = new PIXI.Filter(null, `
+          precision highp float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform vec4 inputSize;
+          uniform vec4 outputFrame;
+          uniform vec4 inputClamp;
+          uniform vec2 coneCenter;
+          uniform vec2 coneAxis;
+          uniform float coneRadius;
+          uniform float coneAmount;
+          void main() {
+            vec2 p = (vTextureCoord * inputSize.xy + outputFrame.xy - coneCenter) / coneRadius;
+            vec2 side = vec2(-coneAxis.y, coneAxis.x);
+            float along = dot(p, coneAxis);
+            float across = dot(p, side);
+            // Preserve the round forward hemisphere. Pull only the rear
+            // into the plume, symmetrically about the direction of travel.
+            float rear = smoothstep(0.0, 1.0, -along);
+            float taper = 1.0 - coneAmount * 0.55 * rear;
+            float sourceAlong = along / (1.0 + coneAmount * 0.65 * rear);
+            vec2 source = coneAxis * sourceAlong + side * (across / taper);
+            vec2 uv = (source * coneRadius + coneCenter - outputFrame.xy) * inputSize.zw;
+            vec4 color = texture2D(uSampler, clamp(uv, inputClamp.xy, inputClamp.zw));
+            float inside = step(inputClamp.x, uv.x) * step(inputClamp.y, uv.y)
+              * step(uv.x, inputClamp.z) * step(uv.y, inputClamp.w);
+            float rim = smoothstep(0.25, 1.0, along) * coneAmount;
+            color.rgb += vec3(0.08, 0.24, 0.32) * rim * color.a;
+            gl_FragColor = color * inside;
+          }`, { coneCenter: [0, 0], coneAxis: [1, 0], coneRadius: 1, coneAmount: 0 });
+        filter.padding = 4;
+        renderer.__headSpaceBoostConeFilter = filter;
+      }
+      filter.padding = Math.ceil(radius * 0.8 + 4);
+      filter.uniforms.coneCenter = [bounds.x + bounds.width / 2, bounds.y + bounds.height / 2];
+      filter.uniforms.coneAxis = [directionX / directionLength, directionY / directionLength];
+      filter.uniforms.coneRadius = radius;
+      filter.uniforms.coneAmount = amount;
+      if (!(renderer.filters || []).includes(filter)) renderer.filters = [...(renderer.filters || []), filter];
+    }
+  }
+
   function lockGameplayPlayerCosmeticComposites(runtimeScene) {
     if (!runtimeScene) return;
     const playerImages = runtimeScene.getObjects("PlayerImage");
@@ -21515,6 +21641,7 @@
       // visual fill within it and cannot resize or reposition that silhouette.
       imageRenderer.position?.copyFrom?.(helmetRenderer.position);
       imageRenderer.rotation = helmetRenderer.rotation;
+      updatePlayerBoostCone(player, imageRenderer, helmetRenderer);
     }
   }
 
@@ -24191,6 +24318,10 @@
   installProtectedAbsorbFiltering();
   gdjs.registerRuntimeScenePreEventsCallback(onScenePreEvents);
   gdjs.registerRuntimeSceneLoadedCallback(onSceneLoaded);
+  gdjs.registerRuntimeSceneUnloadedCallback((runtimeScene) => {
+    clearActorComets(levelFiveBoostSystemState.get(runtimeScene));
+    clearActorComets(runtimeScene.__headSpaceSharedDeclarativeMultiplayerSystem);
+  });
   gdjs.registerRuntimeScenePostEventsCallback(onScenePostEvents);
   // Native events and the main patch pass can resize/move the player companions.
   // Reapply the custom texture last so the face uses the helmet's final transform
@@ -24257,6 +24388,8 @@
     // reapply only the intentional boost scale deformation afterward.
     reapplyLevelFiveBoostCompanionWarpAfterLayout(runtimeScene);
     reapplyBoostCompanionWarpAfterLayout(sharedMultiplayerSystem);
+    updateBoostCometsAfterLayout(runtimeScene, levelFiveBoostSystemState.get(runtimeScene));
+    updateBoostCometsAfterLayout(runtimeScene, sharedMultiplayerSystem);
     syncMultiplayerActorLightObstacles(runtimeScene);
   });
 })();
