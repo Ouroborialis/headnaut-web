@@ -2574,6 +2574,10 @@
     layerName = ""
   ) {
     if (!rendererObject) return;
+    if (rendererObject.__headSpaceStarTwinkle) {
+      rendererObject.__headSpaceStarTwinkle.destroy();
+      delete rendererObject.__headSpaceStarTwinkle;
+    }
     const layerRenderer = runtimeScene.getLayer(layerName)?.getRenderer?.();
     try {
       layerRenderer?.removeRendererObject?.(rendererObject);
@@ -2584,6 +2588,50 @@
     if (rendererObject.destroy && !rendererObject.destroyed) {
       rendererObject.destroy({ children: true, texture: destroyTexture, baseTexture: destroyTexture });
     }
+  }
+
+  // Attach only to backdrop sprites: never to a layer containing actors or UI.
+  function updateBackgroundTwinkle(sprite, runtimeScene) {
+    if (!sprite || sprite.destroyed || !PIXI.Filter) return;
+    let filter = sprite.__headSpaceStarTwinkle;
+    if (!filter) {
+      filter = new PIXI.Filter(null, `
+        precision highp float;
+        varying vec2 vTextureCoord;
+        uniform sampler2D uSampler;
+        uniform vec4 inputSize;
+        uniform vec4 inputClamp;
+        uniform float twinkleTime;
+        float light(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+        void main() {
+          vec2 uv = vTextureCoord;
+          vec4 color = texture2D(uSampler, uv);
+          vec2 stepUV = inputSize.zw * 2.0;
+          float nearby = (
+            light(texture2D(uSampler, clamp(uv + vec2(stepUV.x, 0.0), inputClamp.xy, inputClamp.zw)).rgb) +
+            light(texture2D(uSampler, clamp(uv - vec2(stepUV.x, 0.0), inputClamp.xy, inputClamp.zw)).rgb) +
+            light(texture2D(uSampler, clamp(uv + vec2(0.0, stepUV.y), inputClamp.xy, inputClamp.zw)).rgb) +
+            light(texture2D(uSampler, clamp(uv - vec2(0.0, stepUV.y), inputClamp.xy, inputClamp.zw)).rgb)
+          ) * 0.25;
+          float brightness = light(color.rgb);
+          // Local contrast isolates small star cores; broad nebula light stays steady.
+          float star = smoothstep(0.035, 0.20, brightness - nearby)
+            * smoothstep(0.28, 0.80, brightness);
+          vec2 cell = floor(uv * inputSize.xy / 12.0);
+          float seed = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 437.58);
+          float wave = sin(twinkleTime * (0.9 + seed * 1.1) + seed * 6.28318)
+            * 0.7 + sin(twinkleTime * 0.61 + seed * 19.0) * 0.3;
+          color.rgb *= 1.0 + star * wave * 0.24;
+          gl_FragColor = color;
+        }
+      `, {twinkleTime: 0});
+      filter.padding = 0;
+      // One pass at CSS-pixel resolution avoids multiplying cost on high-DPI phones.
+      filter.resolution = 1;
+      sprite.__headSpaceStarTwinkle = filter;
+    }
+    if (!(sprite.filters || []).includes(filter)) sprite.filters = [...(sprite.filters || []), filter];
+    filter.uniforms.twinkleTime = (performance.now() / 1000) % 4096;
   }
 
   function clearHomeHighResBackground(runtimeScene) {
@@ -2621,6 +2669,7 @@
     state.sprite.width = size.width;
     state.sprite.height = size.height;
     state.sprite.visible = true;
+    updateBackgroundTwinkle(state.sprite, runtimeScene);
   }
 
   function clearLevelHighResBackground(runtimeScene) {
@@ -2677,6 +2726,7 @@
     state.sprite.width = size.width;
     state.sprite.height = size.height;
     state.sprite.visible = true;
+    updateBackgroundTwinkle(state.sprite, runtimeScene);
   }
 
   function clearLevelSelectCelestialSystem(runtimeScene) {
@@ -2825,6 +2875,7 @@
     system.background.width = backgroundSize.width;
     system.background.height = backgroundSize.height;
     system.background.visible = true;
+    updateBackgroundTwinkle(system.background, runtimeScene);
     system.station.position.y = system.stationBaseY + Math.sin(system.elapsedSeconds * 1.15) * 13;
     system.station.rotation = Math.sin(system.elapsedSeconds * 0.72) * 0.035;
     const baseCameraX = gdjs.evtTools.camera.getCameraX(runtimeScene, "", 0);
