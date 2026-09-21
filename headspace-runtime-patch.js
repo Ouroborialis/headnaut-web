@@ -2590,6 +2590,50 @@
     }
   }
 
+  const textureRecoveryState = new WeakMap();
+
+  function recoverUnloadedArtwork(sprite) {
+    const original = sprite?.texture;
+    if (!original || sprite.destroyed) return;
+    const url = original.baseTexture?.resource?.url;
+    if (url) sprite.__headSpaceArtworkUrl ||= url;
+    if (original.valid) return;
+    if (!url || !/^https?:/i.test(new URL(url, location.href).href)) return;
+    let recovery = textureRecoveryState.get(original);
+    const now = performance.now();
+    if (!recovery) {
+      recovery = {nextAttempt: now + 1500, attempts: 0, pending: false, texture: null};
+      textureRecoveryState.set(original, recovery);
+    }
+    if (recovery.texture) {
+      const width = sprite.width, height = sprite.height;
+      sprite.texture = recovery.texture;
+      sprite.width = width; sprite.height = height;
+      return;
+    }
+    if (recovery.pending || now < recovery.nextAttempt) return;
+    recovery.pending = true;
+    recovery.attempts++;
+    const retryUrl = new URL(url, location.href);
+    retryUrl.searchParams.set("artworkRetry", String(recovery.attempts));
+    // PIXI retains rejected image-load promises. Decode a fresh request and
+    // share the replacement texture rather than leaving that cached failure forever.
+    fetch(retryUrl.href).then(response => {
+      if (!response.ok) throw new Error(`Artwork HTTP ${response.status}`);
+      return response.blob();
+    }).then(async blob => {
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        const image = new Image();
+        image.src = objectUrl;
+        await image.decode();
+        recovery.texture = PIXI.Texture.from(image);
+      } finally { URL.revokeObjectURL(objectUrl); }
+    }).catch(() => {
+      recovery.nextAttempt = performance.now() + Math.min(30000, 1500 * 2 ** Math.min(recovery.attempts, 5));
+    }).finally(() => { recovery.pending = false; });
+  }
+
   // Attach only to backdrop sprites: never to a layer containing actors or UI.
   function updateBackgroundTwinkle(sprite, runtimeScene) {
     if (!sprite || sprite.destroyed || !PIXI.Filter) return;
@@ -2673,6 +2717,7 @@
     state.sprite.width = size.width;
     state.sprite.height = size.height;
     state.sprite.visible = true;
+    recoverUnloadedArtwork(state.sprite);
     updateBackgroundTwinkle(state.sprite, runtimeScene);
   }
 
@@ -2730,6 +2775,7 @@
     state.sprite.width = size.width;
     state.sprite.height = size.height;
     state.sprite.visible = true;
+    recoverUnloadedArtwork(state.sprite);
     updateBackgroundTwinkle(state.sprite, runtimeScene);
   }
 
@@ -2879,6 +2925,7 @@
     system.background.width = backgroundSize.width;
     system.background.height = backgroundSize.height;
     system.background.visible = true;
+    recoverUnloadedArtwork(system.background);
     updateBackgroundTwinkle(system.background, runtimeScene);
     system.station.position.y = system.stationBaseY + Math.sin(system.elapsedSeconds * 1.15) * 13;
     system.station.rotation = Math.sin(system.elapsedSeconds * 0.72) * 0.035;
@@ -7399,6 +7446,7 @@
       const portal = system.portals[i];
       const graphic = portal.graphic;
       const sprite = graphic.__headSpaceSprite;
+      recoverUnloadedArtwork(sprite);
       const baseSize = graphic.__headSpaceBaseSize || LEVEL_NINE_BLACK_HOLE_SIZE;
       const pulsePhase = system.elapsedSeconds * 1.85 + i * Math.PI;
       const pulse = 1 + Math.sin(pulsePhase) * 0.055 + Math.sin(pulsePhase * 0.47) * 0.018;
@@ -7433,6 +7481,7 @@
 
     for (let i = 0; i < (system.planets || []).length; i++) {
       const planet = system.planets[i];
+      recoverUnloadedArtwork(planet.sprite);
       planet.sprite.rotation = system.elapsedSeconds * planet.config.rotationSpeed + i * 0.37;
       planet.sprite.visible = true;
     }
@@ -7499,7 +7548,7 @@
         centerDirection.y * 0.72 + transit.directionY * 0.28
       );
       const playerRadius = getApproxObjectRadius(player, 24);
-      const targetSize = target.graphic?.__headSpaceBaseSize || LEVEL_NINE_BLACK_HOLE_SIZE;
+      const targetSize = transit.target.graphic?.__headSpaceBaseSize || LEVEL_NINE_BLACK_HOLE_SIZE;
       const exitDistance = targetSize * LEVEL_NINE_BLACK_HOLE_EXIT_RATIO + playerRadius + 24;
       moveObjectToCenter(
         player,
@@ -7577,6 +7626,10 @@
   }
 
   function applyBlackHolePortalPlayerVisual(runtimeScene) {
+    // Level 9 keeps the approved native composite at its collision diameter.
+    // The portal artwork supplies the intake animation; renderer stretching
+    // accumulated across frames and could flatten the player into a line.
+    if (levelNineBlackHoleSystemState.get(runtimeScene)) return;
     const system =
       levelNineBlackHoleSystemState.get(runtimeScene) ||
       levelElevenCelestialSystemState.get(runtimeScene) ||
@@ -7620,6 +7673,7 @@
   }
 
   function reapplyBlackHolePortalCompanionVisual(runtimeScene) {
+    if (levelNineBlackHoleSystemState.get(runtimeScene)) return;
     const system =
       levelNineBlackHoleSystemState.get(runtimeScene) ||
       levelElevenCelestialSystemState.get(runtimeScene) ||
