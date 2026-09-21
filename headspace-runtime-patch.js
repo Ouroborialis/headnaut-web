@@ -7627,8 +7627,8 @@
 
   function applyBlackHolePortalPlayerVisual(runtimeScene) {
     // Level 9 keeps the approved native composite at its collision diameter.
-    // The portal artwork supplies the intake animation; renderer stretching
-    // accumulated across frames and could flatten the player into a line.
+    // A shared final-frame shader supplies the stretch and spin instead of
+    // multiplying renderer scales across successive frames.
     if (levelNineBlackHoleSystemState.get(runtimeScene)) return;
     const system =
       levelNineBlackHoleSystemState.get(runtimeScene) ||
@@ -21762,6 +21762,60 @@
     }
   }
 
+  function updateLevelNinePlayerPortalWarp(runtimeScene, player, imageRenderer, helmetRenderer) {
+    const transit = levelNineBlackHoleSystemState.get(runtimeScene)?.transit;
+    const active = transit?.player === player;
+    const intake = transit?.phase === "intake";
+    const duration = intake ? LEVEL_NINE_BLACK_HOLE_INTAKE_SECONDS : LEVEL_NINE_BLACK_HOLE_EXIT_SECONDS;
+    const progress = active ? clamp(transit.elapsedSeconds / duration, 0, 1) : 0;
+    const intensity = intake ? Math.pow(progress, 1.35) : Math.pow(1 - progress, 0.82);
+    const stretch = active ? [1 + intensity * 2.15, 1 - intensity * 0.58] : [1, 1];
+    const angle = active ? (intake ? progress * 2 : 2 + progress) * Math.PI * 2 : 0;
+    const bounds = helmetRenderer.getBounds();
+    const center = [bounds.x + bounds.width / 2, bounds.y + bounds.height / 2];
+    for (const renderer of [imageRenderer, helmetRenderer]) {
+      let filter = renderer.__headSpacePortalWarpFilter;
+      if (!active) {
+        if (filter) {
+          renderer.filters = (renderer.filters || []).filter(item => item !== filter);
+          filter.destroy();
+          delete renderer.__headSpacePortalWarpFilter;
+        }
+        continue;
+      }
+      if (!filter) {
+        filter = new PIXI.Filter(null, `
+          precision highp float;
+          varying vec2 vTextureCoord;
+          uniform sampler2D uSampler;
+          uniform vec4 inputSize;
+          uniform vec4 outputFrame;
+          uniform vec4 inputClamp;
+          uniform vec2 portalCenter;
+          uniform vec2 portalStretch;
+          uniform float portalAngle;
+          void main() {
+            vec2 p = vTextureCoord * inputSize.xy + outputFrame.xy - portalCenter;
+            float c = cos(portalAngle), s = sin(portalAngle);
+            // Invert the same spin and stretch for both authored layers.
+            // Their gameplay geometry stays fixed; the image warp never accumulates.
+            vec2 source = vec2(c * p.x + s * p.y, -s * p.x + c * p.y) / portalStretch;
+            vec2 uv = (source + portalCenter - outputFrame.xy) * inputSize.zw;
+            float inside = step(inputClamp.x, uv.x) * step(inputClamp.y, uv.y)
+              * step(uv.x, inputClamp.z) * step(uv.y, inputClamp.w);
+            gl_FragColor = texture2D(uSampler, clamp(uv, inputClamp.xy, inputClamp.zw)) * inside;
+          }
+        `, {portalCenter: [0, 0], portalStretch: [1, 1], portalAngle: 0});
+        renderer.__headSpacePortalWarpFilter = filter;
+      }
+      filter.padding = Math.ceil(Math.max(bounds.width, bounds.height) * 1.6 + 4);
+      filter.uniforms.portalCenter = center;
+      filter.uniforms.portalStretch = stretch;
+      filter.uniforms.portalAngle = angle;
+      if (!(renderer.filters || []).includes(filter)) renderer.filters = [...(renderer.filters || []), filter];
+    }
+  }
+
   function lockGameplayPlayerCosmeticComposites(runtimeScene) {
     if (!runtimeScene) return;
     const playerImages = runtimeScene.getObjects("PlayerImage");
@@ -21796,6 +21850,7 @@
       imageRenderer.position?.copyFrom?.(helmetRenderer.position);
       imageRenderer.rotation = helmetRenderer.rotation;
       updatePlayerBoostCone(player, imageRenderer, helmetRenderer);
+      updateLevelNinePlayerPortalWarp(runtimeScene, player, imageRenderer, helmetRenderer);
     }
   }
 
