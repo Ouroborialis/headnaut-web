@@ -221,10 +221,46 @@
     };
     const modeLabel = () => selectedMode === "hunt-the-boss" ? "Hunt the Boss" : "Head to Head";
     const syncRoomSelection = () => room?.isHost && options.onSettingsChange?.({ level: selectedLevel, mode: selectedMode });
+    const presenceColor = player => ["#32ff68", "#ff55bc", "#ffbd45", "#73a5ff"][(Number(player.playerNumber) || 1) - 1];
+    const cursors = document.createElement("div");
+    Object.assign(cursors.style, {position:"absolute",inset:"0",pointerEvents:"none",zIndex:"10"});
+    shell.style.position = "relative";
+    shell.append(cursors);
+    let lastCursorSent = 0;
+    shell.addEventListener("pointermove", event => {
+      if (!room || performance.now() - lastCursorSent < 80) return;
+      lastCursorSent = performance.now();
+      const rect = shell.getBoundingClientRect();
+      HeadSpaceMultiplayerService.updateActivity({cursor:{x:(event.clientX-rect.left)/rect.width,y:(event.clientY-rect.top)/rect.height}});
+    });
+    shell.addEventListener("pointerleave", () => room && HeadSpaceMultiplayerService.updateActivity({cursor:null}));
+    const renderPresence = () => {
+      const players = room?.players || [];
+      for (const button of root.querySelectorAll(".mp-level,.mp-mode")) {
+        const level = Number(button.dataset.level);
+        const selected = level ? level === room?.level : button.dataset.mode === room?.mode;
+        const voters = players.filter(p => !p.host && (level ? p.suggestedLevel === level : p.suggestedMode === button.dataset.mode));
+        button.style.borderColor = selected ? "#32ff68" : "";
+        button.style.boxShadow = [selected ? "inset 0 0 0 2px #32ff68" : "", ...voters.map((p,i)=>`0 0 0 ${3+i*3}px ${presenceColor(p)}`)].filter(Boolean).join(",");
+        button.title = [selected ? "Host's choice" : "", ...voters.map(p=>`Player ${p.playerNumber}'s suggestion`)].filter(Boolean).join(" ? ");
+      }
+      cursors.replaceChildren();
+      for (const player of players) {
+        if (!player.cursor || player.playerNumber === room.localPlayerNumber) continue;
+        const marker = document.createElement("span");
+        marker.textContent = `? ${player.host ? "HOST" : `P${player.playerNumber}`}`;
+        Object.assign(marker.style, {position:"absolute",left:`${player.cursor.x*100}%`,top:`${player.cursor.y*100}%`,color:presenceColor(player),font:"bold 13px Arial",textShadow:"0 1px 3px black"});
+        cursors.append(marker);
+      }
+    };
+    let playerListKey = "";
     const renderPlayers = () => {
       const players = Array.isArray(room?.players) && room.players.length
         ? room.players.slice(0, 4)
         : [{ id: "local-player", name: "YOU", host: true, ready: true }];
+      const key=JSON.stringify(players.map(({cursor,...player})=>player));
+      if (key===playerListKey) return;
+      playerListKey=key;
       playerHeading.textContent = `PLAYERS (${players.length}/4)`;
       playerList.replaceChildren();
       for (const player of players) {
@@ -242,7 +278,8 @@
         const copy = document.createElement("div");
         const name = document.createElement("div");
         name.className = "mp-player-name";
-        name.textContent = String(player.name || "PLAYER");
+        name.textContent = player.playerNumber === room?.localPlayerNumber ? "YOU" : (player.name && player.name !== "YOU" ? player.name : `PLAYER ${player.playerNumber}`);
+        row.style.borderLeft = `4px solid ${presenceColor(player)}`;
         const role = document.createElement("div");
         role.className = "mp-player-role";
         role.textContent = `${player.host ? "HOST" : "PLAYER"} · ${player.ready === false ? "WAITING" : "READY"}`;
@@ -266,14 +303,15 @@
       inviteButton.disabled = !inRoom;
       copyCodeButton.disabled = !inRoom;
       for (const button of root.querySelectorAll(".mp-level")) {
-        button.disabled = !inRoom || !isHost;
+        button.disabled = !inRoom;
         button.setAttribute("aria-pressed", String(Number(button.dataset.level) === selectedLevel));
       }
       for (const button of root.querySelectorAll(".mp-mode")) {
-        button.disabled = !inRoom || !isHost;
+        button.disabled = !inRoom;
         button.setAttribute("aria-pressed", String(button.dataset.mode === selectedMode));
       }
       renderPlayers();
+      renderPresence();
       startButton.disabled = !isHost || !selectedLevel || (room?.players?.length || 0) < 2;
       if (inRoom) setStatus(isHost
         ? ((room.players?.length || 0) < 2 ? `Room ${room.code} is ready. Waiting for another player.` : selectedLevel ? `Everyone is ready. Start Level ${selectedLevel} when you are ready.` : "Player joined. Choose a level and mode.")
@@ -284,6 +322,7 @@
     for (const button of root.querySelectorAll(".mp-mode")) {
       button.setAttribute("aria-pressed", String(button.dataset.mode === selectedMode));
       button.addEventListener("click", () => {
+        if (room && !room.isHost) { HeadSpaceMultiplayerService.updateActivity({mode: button.dataset.mode}); return; }
         selectedMode = button.dataset.mode;
         for (const other of root.querySelectorAll(".mp-mode")) {
           other.setAttribute("aria-pressed", String(other.dataset.mode === selectedMode));
@@ -310,6 +349,7 @@
       if (background) button.style.backgroundImage = `url("${background}")`;
       button.setAttribute("aria-pressed", String(selectedLevel === level));
       button.addEventListener("click", () => {
+        if (room && !room.isHost) { HeadSpaceMultiplayerService.updateActivity({level}); return; }
         selectedLevel = level;
         for (const other of levels.querySelectorAll(".mp-level")) {
           other.setAttribute("aria-pressed", String(Number(other.dataset.level) === level));

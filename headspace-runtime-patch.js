@@ -931,7 +931,9 @@
   function isMultiplayerDomInputOwned() {
     return Boolean(
       globalThis.HeadSpaceMultiplayerSetup?.isOpen?.() ||
-      performance.now() < multiplayerInputSuppressedUntil
+      performance.now() < multiplayerInputSuppressedUntil ||
+      (activeRuntimeScene?.__headSpaceRoomSync && !activeRuntimeScene.getObjects("Player").some(player =>
+        player.__headSpaceRoomPlayerNumber === globalThis.HeadSpaceMultiplayerService?.getRoom?.()?.localPlayerNumber))
     );
   }
 
@@ -1391,6 +1393,8 @@
     button.style.textShadow = "0 0 8px rgba(120, 220, 255, 0.7)";
     button.style.zIndex = "2147483646";
     button.style.transition = "filter 100ms ease, transform 100ms ease";
+    button.style.touchAction = "none";
+    let lastTouchPause = -Infinity;
 
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
@@ -1401,6 +1405,11 @@
       event.preventDefault();
       event.stopPropagation();
       button.style.transform = "scale(1)";
+      if (event.pointerType === "touch" || event.pointerType === "pen") {
+        lastTouchPause = performance.now();
+        multiplayerInputSuppressedUntil = performance.now() + 400;
+        togglePauseFromHud();
+      }
     });
     button.addEventListener("pointercancel", () => {
       button.style.transform = "scale(1)";
@@ -1415,6 +1424,8 @@
     button.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (performance.now() - lastTouchPause < 600) return;
+      multiplayerInputSuppressedUntil = performance.now() + 400;
       togglePauseFromHud();
     });
 
@@ -1518,11 +1529,13 @@
     overlay.appendChild(createPauseButton("RETRY", "retry"));
     overlay.appendChild(createPauseButton("LEVEL SELECT", "level-select"));
 
+    let lastTouchAction = -Infinity;
     overlay.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
       const button = event.target.closest("button[data-action]");
       if (!button) return;
+      if (performance.now()-lastTouchAction<600) return;
       handlePauseMenuAction(button.dataset.action);
     });
     overlay.addEventListener("pointerdown", (event) => {
@@ -1534,6 +1547,12 @@
     overlay.addEventListener("pointerup", (event) => {
       const button = event.target.closest("button[data-action]");
       if (button) button.style.transform = "scale(1)";
+      if (button && (event.pointerType === "touch" || event.pointerType === "pen")) {
+        event.preventDefault(); event.stopPropagation();
+        lastTouchAction = performance.now();
+        multiplayerInputSuppressedUntil = performance.now()+400;
+        handlePauseMenuAction(button.dataset.action);
+      }
     });
     overlay.addEventListener("pointerover", (event) => {
       const button = event.target.closest("button[data-action]");
@@ -2016,7 +2035,8 @@
     };
 
     players.forEach((player, index) => {
-      const participantNumber = participantOrder[index] || index + 1;
+      const participantNumber = Number(player.__headSpaceRoomPlayerNumber) || participantOrder[index] || index + 1;
+      if (roomPlayers.length) player.__headSpaceRoomPlayerNumber = participantNumber;
       const profile = roomPlayers.find(entry => Number(entry.playerNumber) === participantNumber) || null;
       applyParticipantIdentity(player, participantNumber, "player");
       const id = getMultiplayerParticipantId(player, index);
@@ -2273,6 +2293,8 @@
     if (originalAbsorb.__headSpaceProtectedAbsorbFiltering) return;
 
     const wrappedAbsorb = function (runtimeScene, Object, Physics2, Eaten) {
+      const room = globalThis.HeadSpaceMultiplayerService?.getRoom?.();
+      if (room?.status === "playing" && !room.isHost && isMultiplayerGame(runtimeScene, getCurrentLevel(runtimeScene))) return;
       let callArguments = arguments;
       let cosmicAlienBonuses = null;
       let multiplayerAbsorbSnapshot = null;
@@ -13033,7 +13055,7 @@
         const players = runtimeScene.getObjects("Player");
         players.forEach((player, index) => {
           const spawn =
-            system.playerSpawns[index % system.playerSpawns.length];
+            system.playerSpawns[((player.__headSpaceRoomPlayerNumber || index + 1) - 1) % system.playerSpawns.length];
           if (!spawn) return;
           moveObjectToCenter(player, spawn.x, spawn.y);
           clearObjectMotion(player);
@@ -14344,7 +14366,7 @@
       const playerImages = runtimeScene.getObjects("PlayerImage");
       const playerHelmets = runtimeScene.getObjects("PlayerHelmet");
       players.forEach((player, index) => {
-        const spawn = system.spawnSlots[index % system.spawnSlots.length];
+        const spawn = system.spawnSlots[((player.__headSpaceRoomPlayerNumber || index + 1) - 1) % system.spawnSlots.length];
         moveObjectToCenter(player, spawn.x, spawn.y);
         if (playerImages[index]) moveObjectToCenter(playerImages[index], spawn.x, spawn.y);
         if (playerHelmets[index]) moveObjectToCenter(playerHelmets[index], spawn.x, spawn.y);
@@ -21533,7 +21555,9 @@
           objectName === "PlayerImage" &&
           isMultiplayerGame(runtimeScene, getCurrentLevel(runtimeScene)) &&
           object.__headSpaceParticipantId &&
-          object.__headSpaceParticipantId !== "local-player"
+          (globalThis.HeadSpaceMultiplayerService?.getRoom?.()
+            ? object.__headSpaceCompanionHost?.__headSpaceRoomPlayerNumber !== globalThis.HeadSpaceMultiplayerService.getRoom().localPlayerNumber
+            : object.__headSpaceCompanionHost !== runtimeScene.getObjects("Player")[0])
         ) {
           continue;
         }
@@ -23275,6 +23299,7 @@
       if (inputManager?._releasedMouseButtons) inputManager._releasedMouseButtons.length = 0;
     }
     if (flushQueuedPauseMenuNavigation(runtimeScene)) return;
+    syncPrivateRoomGameplay(runtimeScene, true);
 
     const level = getCurrentLevel(runtimeScene);
     if (Number(level) === 0) captureCharacterCarouselSelection(runtimeScene);
@@ -24516,6 +24541,150 @@
     return true;
   }
 
+  // Private rooms use explicit snapshots: this export has no MultiplayerObject
+  // behavior. The host owns arena state and absorption; clients send their own motion.
+  function syncPrivateRoomGameplay(runtimeScene, beforeEvents = false) {
+    const service = globalThis.HeadSpaceMultiplayerService;
+    const room = service?.getRoom?.();
+    if (room?.status !== "playing" || !isMultiplayerGame(runtimeScene, getCurrentLevel(runtimeScene))) return;
+    let state = runtimeScene.__headSpaceRoomSync;
+    if (!state) {
+      if (beforeEvents) return;
+      const players = runtimeScene.getObjects("Player");
+      if (!players.length) return;
+      const first = players[0];
+      const origin = {x:first.getCenterXInScene(),y:first.getCenterYInScene()};
+      for (let missing=players.length; missing<room.players.length; missing++) {
+        const player = createSceneObject(runtimeScene, "Player", "");
+        if (!player) break;
+        setObjectSizeAndShape(player, first.getWidth());
+        moveObjectToCenter(player, origin.x + players.length * (first.getWidth()+180), origin.y);
+        clearObjectMotion(player);
+      }
+      ensureMultiplayerParticipantOwnership(runtimeScene);
+      // Use the same spawn for each participant on every device, retaining local
+      // player first in the instance list for the authored camera/input events.
+      const spawns = players.map(p=>({x:p.getCenterXInScene(),y:p.getCenterYInScene()}));
+      for (const player of players) {
+        if ([1,4].includes(Number(getCurrentLevel(runtimeScene)))) continue;
+        const point = spawns[(player.__headSpaceRoomPlayerNumber || 1)-1];
+        if (point) moveObjectToCenter(player,point.x,point.y);
+      }
+      state = runtimeScene.__headSpaceRoomSync = {sentAt:0,seq:0,received:new Map(),ejectedMass:0,acceptedMass:new Map()};
+      for (const name of ["Enemy","SmartEnemy"]) runtimeScene.getObjects(name).forEach((o,i)=>o.__headSpaceArenaId=`${name}-${i}`);
+    }
+    const apply = (object, packet, motionOnly = false) => {
+      if (!object || !packet || ![packet.x,packet.y,packet.size,packet.angle].every(Number.isFinite)) return;
+      if (!motionOnly && packet.size > 0) setObjectSizeAndShape(object, packet.size);
+      moveObjectToCenter(object,packet.x,packet.y);
+      object.setAngle(packet.angle);
+      const physics = object.getBehavior?.("Physics2");
+      physics?.setLinearVelocityX?.(Number(packet.vx)||0);
+      physics?.setLinearVelocityY?.(Number(packet.vy)||0);
+    };
+    const capture = object => {
+      const physics=object.getBehavior?.("Physics2");
+      return {id:object.__headSpaceRoomPlayerNumber || object.__headSpaceArenaId,x:object.getCenterXInScene(),y:object.getCenterYInScene(),size:object.getWidth(),angle:object.getAngle(),vx:physics?.getLinearVelocityX?.()||0,vy:physics?.getLinearVelocityY?.()||0,acceptedMass:state.acceptedMass.get(object.__headSpaceRoomPlayerNumber)||0};
+    };
+    const players=runtimeScene.getObjects("Player");
+    if (room.isHost) {
+      for (const [number,packet] of service.getRemoteStates()) {
+        if (!packet || packet.seq < (state.received.get(number)||0)) continue;
+        const player=players.find(p=>p.__headSpaceRoomPlayerNumber===number);
+        apply(player, packet.player, true);
+        const mass=Number(packet.ejectedMass);
+        const accepted=state.acceptedMass.get(number)||0;
+        if(player && Number.isFinite(mass) && mass>=accepted) {
+          setObjectSizeAndShape(player,Math.sqrt(Math.max(1,player.getWidth()**2-(mass-accepted))));
+          state.acceptedMass.set(number,mass);
+        }
+        state.received.set(number,packet.seq);
+      }
+    } else {
+      const local=players.find(p=>p.__headSpaceRoomPlayerNumber===room.localPlayerNumber);
+      if(!beforeEvents && local && Number.isFinite(state.localSizeBeforeEvents)) {
+        state.ejectedMass+=Math.max(0,state.localSizeBeforeEvents**2-local.getWidth()**2);
+        state.localSizeBeforeEvents=undefined;
+      }
+      const world=service.getWorldState();
+      if (world?.players) {
+        for (const player of players.slice()) {
+          const number=player.__headSpaceRoomPlayerNumber;
+          const packet=world.players.find(p=>p.id===number);
+          if (!packet) { deleteRuntimeObjectTree(runtimeScene,player); continue; }
+          if (number !== room.localPlayerNumber) apply(player,packet);
+          else if (beforeEvents && Number.isFinite(packet.size) && packet.size>0) {
+            setObjectSizeAndShape(player,Math.sqrt(Math.max(1,packet.size**2-Math.max(0,state.ejectedMass-(packet.acceptedMass||0)))));
+          }
+        }
+        for (const name of ["Enemy","SmartEnemy"]) for (const object of runtimeScene.getObjects(name).slice()) {
+          const packet=world.actors?.find(p=>p.id===object.__headSpaceArenaId);
+          if (packet) apply(object,packet);
+          else if (object.__headSpaceArenaId) deleteRuntimeObjectTree(runtimeScene,object);
+        }
+        if (world.won) {
+          const localAlive = world.players.some(p=>p.id===room.localPlayerNumber);
+          const won = room.mode === "hunt-the-boss" || localAlive;
+          const scene = ensureSceneState(runtimeScene,getCurrentLevel(runtimeScene));
+          scene.multiplayerOutcomeAuthorized = true;
+          setSceneBoolean(runtimeScene,"LevelWon",won);
+          setSceneBoolean(runtimeScene,"LevelLost",!won);
+        }
+      }
+    }
+    if (!room.isHost && beforeEvents) state.localSizeBeforeEvents=players.find(p=>p.__headSpaceRoomPlayerNumber===room.localPlayerNumber)?.getWidth();
+    if (room.isHost && !beforeEvents && room.mode === "head-to-head" && !getSceneBoolean(runtimeScene,"Paused")) {
+      for (let i=0;i<players.length;i++) for (let j=i+1;j<players.length;j++) {
+        const a=players[i],b=players[j];
+        if(a.isDeleted?.() || b.isDeleted?.() || Math.abs(a.getWidth()-b.getWidth())<0.1) continue;
+        const big=a.getWidth()>b.getWidth()?a:b, small=big===a?b:a;
+        if(big.__headSpaceBlackHoleTransit || small.__headSpaceBlackHoleTransit) continue;
+        const distance=Math.hypot(big.getCenterXInScene()-small.getCenterXInScene(),big.getCenterYInScene()-small.getCenterYInScene());
+        const remaining=2*Math.max(0,distance-big.getWidth()/2);
+        if(remaining>=small.getWidth()) continue;
+        const matter=small.getWidth()**2-remaining**2;
+        const center={x:big.getCenterXInScene(),y:big.getCenterYInScene()};
+        setObjectSizeAndShape(big,Math.sqrt(big.getWidth()**2+matter));
+        moveObjectToCenter(big,center.x,center.y);
+        if(remaining<1) {
+          recordMultiplayerAbsorption(runtimeScene,[big],[small]);
+          deleteRuntimeObjectTree(runtimeScene,small);
+        } else {
+          const x=small.getCenterXInScene(),y=small.getCenterYInScene();
+          setObjectSizeAndShape(small,remaining); moveObjectToCenter(small,x,y);
+        }
+      }
+    }
+    if (beforeEvents || performance.now()-state.sentAt<40) return;
+    state.sentAt=performance.now();
+    const local=players.find(p=>p.__headSpaceRoomPlayerNumber===room.localPlayerNumber);
+    const packet = room.isHost ? {
+      seq:++state.seq,players:runtimeScene.getObjects("Player").filter(p=>!p.isDeleted?.()).map(capture),
+      actors:[...runtimeScene.getObjects("Enemy"),...runtimeScene.getObjects("SmartEnemy")].filter(o=>o.__headSpaceArenaId).map(capture),
+      won:getSceneBoolean(runtimeScene,"LevelWon")
+    } : {seq:++state.seq,ejectedMass:state.ejectedMass,player:local ? capture(local) : null};
+    service.exchangeState(packet);
+  }
+
+  let pinch = null;
+  window.addEventListener("touchstart", event => {
+    if (event.touches.length!==2 || event.target?.closest?.("button,#headspace-multiplayer-setup") || !activeRuntimeScene || !isPlayableLevel(getCurrentLevel(activeRuntimeScene))) return;
+    const [a,b]=event.touches;
+    pinch={distance:Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY),zoom:getCameraZoom(activeRuntimeScene,""),scene:activeRuntimeScene};
+    multiplayerInputSuppressedUntil=performance.now()+500;
+    event.preventDefault();
+  },{capture:true,passive:false});
+  window.addEventListener("touchmove", event => {
+    if (!pinch || event.touches.length!==2 || pinch.scene!==activeRuntimeScene) return;
+    const [a,b]=event.touches;
+    const zoom=clamp(pinch.zoom*Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY)/Math.max(1,pinch.distance),0.35,2);
+    gdjs.evtTools.camera.setCameraZoom(activeRuntimeScene,zoom,"",0);
+    multiplayerInputSuppressedUntil=performance.now()+500;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  },{capture:true,passive:false});
+  window.addEventListener("touchend",()=>{if(pinch)multiplayerInputSuppressedUntil=performance.now()+400;pinch=null;},{capture:true});
+
   installPlayerCompositePlaceImageGuard();
   installSharedMultiplayerLevelFactories();
   installMultiplayerDomInputShield();
@@ -24584,6 +24753,7 @@
     // This must be the last actor-position correction of the frame. Running it
     // before boosts or moving-body collision resolution allowed those later
     // systems to put hostile actors back on top of one another.
+    syncPrivateRoomGameplay(runtimeScene);
     resolveMultiplayerEnemyOverlaps(runtimeScene);
     enforceGameplayHelmetOcclusion(runtimeScene);
     // Size and center the GDevelop companions before installing the custom

@@ -1,7 +1,7 @@
 (function (root) {
   "use strict";
 
-  const VERSION = "20260903-private-rooms-4";
+  const VERSION = "20260921-room-presence-5";
   const ROOM_PREFIX = "headnaut-room-";
   const CODE_LENGTH = 6;
   const MAX_PLAYERS = 4;
@@ -95,7 +95,20 @@
 
   function handleRoomMessage(peerId, data) {
     if (!session || data?.__headnautRoom !== VERSION) return false;
-    if (data.type === "hello" && session.isHost) {
+    if (data.type === "activity" && session.isHost && !session.started) {
+      const player = session.players.find(item => item.peerId === peerId);
+      if (player) {
+        applyActivity(player, data.activity); emitRoom();
+        broadcast({type:"presence",playerNumber:player.playerNumber,activity:{level:player.suggestedLevel,mode:player.suggestedMode,cursor:player.cursor}});
+      }
+    } else if (data.type === "presence" && !session.isHost && peerId === session.hostPeerId && !session.started) {
+      const player=session.players.find(item=>item.playerNumber===data.playerNumber);
+      if(player) { applyActivity(player,data.activity); emitRoom(); }
+    } else if (data.type === "state" && session.started) {
+      const sender = session.players.find(item => item.peerId === peerId);
+      if (session.isHost && sender) session.remoteStates.set(sender.playerNumber, data.state);
+      else if (!session.isHost && peerId === session.hostPeerId) session.worldState = data.state;
+    } else if (data.type === "hello" && session.isHost) {
       let player = session.players.find(item => item.peerId === peerId);
       if (!player) {
         const playerNumber = nextPlayerNumber();
@@ -158,6 +171,9 @@
     for (const name of ["sendDataTo", "getAllPeers", "getAllMessagesMap", "getOrCreateMessagesList", "getCurrentId", "getJustDisconnectedPeers", "disconnectFromAllPeers", "connect"])
       originalHelper[name] = helper[name];
     helper.sendDataTo = async (peerIds, messageName, data) => {
+      // Arena construction, camera and local pause belong to each client.
+      // Explicit room snapshots synchronize actors without replacing scene state.
+      if (session?.started && ["#updateGame", "#updateScene"].includes(messageName)) return;
       const envelope = { messageName, data: JSON.stringify(data) };
       for (const peerId of peerIds || []) send(session?.connections.get(peerId), envelope);
     };
@@ -197,6 +213,11 @@
     messages.clear();
     disconnected.length = 0;
     if (restore) restoreBridge();
+    const api=multiplayer();
+    if (api) {
+      api.playerNumber=null; api.hostPeerId=null;
+      api._isLobbyGameRunning=false; api._isReadyToSendOrReceiveGameUpdateMessages=false;
+    }
     root.headSpaceMultiplayerRoom = null;
   }
 
@@ -269,9 +290,34 @@
     } catch (error) { destroySession(); throw error; }
   }
 
+  function applyActivity(player, activity = {}) {
+    if (Number.isInteger(activity.level) && activity.level >= 1 && activity.level <= 12) player.suggestedLevel = activity.level;
+    if (["head-to-head", "hunt-the-boss"].includes(activity.mode)) player.suggestedMode = activity.mode;
+    if (activity.cursor === null) player.cursor = null;
+    else if (Number.isFinite(activity.cursor?.x) && Number.isFinite(activity.cursor?.y)) player.cursor = {
+      x: Math.max(0, Math.min(1, activity.cursor.x)), y: Math.max(0, Math.min(1, activity.cursor.y))
+    };
+  }
+  function updateActivity(activity) {
+    if (!session || session.started) return false;
+    if (session.isHost) {
+      applyActivity(session.players[0], activity); emitRoom();
+      const player=session.players[0];
+      broadcast({type:"presence",playerNumber:1,activity:{level:player.suggestedLevel,mode:player.suggestedMode,cursor:player.cursor}});
+    } else sendRoom(session.connections.get(session.hostPeerId), { type: "activity", activity });
+    return true;
+  }
+  function exchangeState(state) {
+    if (!session?.started) return null;
+    if (session.isHost) broadcast({ type: "state", state });
+    else sendRoom(session.connections.get(session.hostPeerId), { type: "state", state });
+  }
+  function getRemoteStates() { return session?.remoteStates || new Map(); }
+  function getWorldState() { return session?.worldState || null; }
+
   function updateSettings(level, mode) {
     if (!session?.isHost || session.started) return false;
-    session.level = Number.isInteger(Number(level)) ? Number(level) : null;
+    session.level = Number.isInteger(Number(level)) && Number(level)>=1 && Number(level)<=12 ? Number(level) : null;
     session.mode = mode === "hunt-the-boss" ? "hunt-the-boss" : "head-to-head";
     emitRoom();
     broadcastRoom();
@@ -290,6 +336,8 @@
   function beginGame(room) {
     if (!session || session.started) return;
     session.started = true;
+    session.remoteStates = new Map();
+    session.worldState = null;
     // Keep GDevelop's multiplayer identity and update loop untouched while each
     // client constructs the authored arena. Setting a player number before the
     // first gameplay frame makes native events wait for the hosted-lobby start.
@@ -326,6 +374,6 @@
 
   root.HeadSpaceMultiplayerService = Object.freeze({
     version: VERSION, getCapabilities, createRoom, joinRoom, updateSettings, startRoom,
-    cancel, getRoom: roomOf, normalizeCode,
+    cancel, getRoom: roomOf, normalizeCode, updateActivity, exchangeState, getRemoteStates, getWorldState,
   });
 })(globalThis);
