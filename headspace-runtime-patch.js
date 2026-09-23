@@ -24600,7 +24600,7 @@
     const apply = (object, packet, motionOnly = false) => {
       if (!object || !packet || ![packet.x,packet.y,packet.size,packet.angle].every(Number.isFinite)) return;
       if (!motionOnly && packet.size > 0) setObjectSizeAndShape(object, packet.size);
-      moveObjectToCenter(object,packet.x,packet.y);
+      setObjectCenterExact(object,packet.x,packet.y);
       object.setAngle(packet.angle);
       object.__headSpaceNetworkPortalTransit=packet.portal===true;
       const physics = object.getBehavior?.("Physics2");
@@ -24620,7 +24620,9 @@
         const mass=Number(packet.ejectedMass);
         const accepted=state.acceptedMass.get(number)||0;
         if(player && Number.isFinite(mass) && mass>=accepted) {
+          const x=player.getCenterXInScene(),y=player.getCenterYInScene();
           setObjectSizeAndShape(player,Math.sqrt(Math.max(1,player.getWidth()**2-(mass-accepted))));
+          setObjectCenterExact(player,x,y);
           state.acceptedMass.set(number,mass);
         }
         state.received.set(number,packet.seq);
@@ -24639,7 +24641,9 @@
           if (!packet) { deleteRuntimeObjectTree(runtimeScene,player); continue; }
           if (number !== room.localPlayerNumber) apply(player,packet);
           else if (beforeEvents && Number.isFinite(packet.size) && packet.size>0) {
+            const x=player.getCenterXInScene(),y=player.getCenterYInScene();
             setObjectSizeAndShape(player,Math.sqrt(Math.max(1,packet.size**2-Math.max(0,state.ejectedMass-(packet.acceptedMass||0)))));
+            setObjectCenterExact(player,x,y);
           }
         }
         for (const name of ["Enemy","SmartEnemy"]) for (const object of runtimeScene.getObjects(name).slice()) {
@@ -24660,36 +24664,66 @@
     if (!room.isHost && beforeEvents) state.localSizeBeforeEvents=players.find(p=>p.__headSpaceRoomPlayerNumber===room.localPlayerNumber)?.getWidth();
     if (room.isHost && !beforeEvents && room.mode === "head-to-head" && !getSceneBoolean(runtimeScene,"Paused")) {
       const previous = state.previousPositions || new Map();
+      const inPortal = p => !!(p.__headSpaceBlackHoleTransit || p.__headSpaceLevelNinePortalTransit || p.__headSpaceNetworkPortalTransit);
+      const observed = state.observedContactSequences || (state.observedContactSequences=new Map());
       for (let i=0;i<players.length;i++) for (let j=i+1;j<players.length;j++) {
         const a=players[i],b=players[j];
-        if(a.isDeleted?.() || b.isDeleted?.() || Math.abs(a.getWidth()-b.getWidth())<0.1) continue;
+        if(a.isDeleted?.() || b.isDeleted?.() || Math.abs(a.getWidth()-b.getWidth())<1e-6) continue;
         const big=a.getWidth()>b.getWidth()?a:b, small=big===a?b:a;
-        if(big.__headSpaceBlackHoleTransit || small.__headSpaceBlackHoleTransit || big.__headSpaceNetworkPortalTransit || small.__headSpaceNetworkPortalTransit) continue;
+        if(inPortal(big) || inPortal(small)) continue;
         const dx=big.getCenterXInScene()-small.getCenterXInScene(), dy=big.getCenterYInScene()-small.getCenterYInScene();
         let distance=Math.hypot(dx,dy);
         const oldBig=previous.get(big.__headSpaceRoomPlayerNumber),oldSmall=previous.get(small.__headSpaceRoomPlayerNumber);
-        if(oldBig && oldSmall) {
+        if(oldBig && oldSmall && !oldBig.portal && !oldSmall.portal) {
           const ox=oldBig.x-oldSmall.x,oy=oldBig.y-oldSmall.y;
           const vx=dx-ox,vy=dy-oy,lengthSquared=vx*vx+vy*vy;
           const t=lengthSquared ? clamp(-(ox*vx+oy*vy)/lengthSquared,0,1) : 0;
           distance=Math.min(distance,Math.hypot(ox+t*vx,oy+t*vy));
+        }
+        // A guest sees an earlier host snapshot. Validate contact against that
+        // exact snapshot as well as the current world, rather than comparing
+        // the guest's old view with the host's newer position. Never trust a
+        // client-supplied size or a claimed winner; the host owns both.
+        for (const remote of [a,b]) {
+          if(remote.__headSpaceRoomPlayerNumber===room.localPlayerNumber) continue;
+          const packet=service.getRemoteStates().get(remote.__headSpaceRoomPlayerNumber);
+          const other=remote===a?b:a;
+          const key=`${remote.__headSpaceRoomPlayerNumber}:${other.__headSpaceRoomPlayerNumber}`;
+          if(!packet || packet.seq<=(observed.get(key)||0)) continue;
+          observed.set(key,packet.seq);
+          const snapshot=state.contactSnapshots?.get(packet.worldSeq);
+          if(!snapshot || performance.now()-snapshot.at>500 || packet.player?.portal || oldBig?.portal || oldSmall?.portal) continue;
+          const oldRemote=snapshot.players.find(p=>p.id===remote.__headSpaceRoomPlayerNumber);
+          const oldOther=snapshot.players.find(p=>p.id===other.__headSpaceRoomPlayerNumber);
+          if(!oldRemote || !oldOther || oldRemote.portal || oldOther.portal) continue;
+          // A size reversal since the observed frame is not a valid old attack.
+          if((oldRemote.size>oldOther.size)!==(remote===big) || Math.abs(oldRemote.size-oldOther.size)<1e-6) continue;
+          const point=packet.player;
+          if(Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+            const seenDistance=Math.hypot(point.x-oldOther.x,point.y-oldOther.y);
+            if(seenDistance<(oldRemote.size+oldOther.size)/2) {
+              const seenBigSize=remote===big?oldRemote.size:oldOther.size;
+              const seenRemaining=2*Math.max(0,seenDistance-seenBigSize/2);
+              distance=Math.min(distance,(big.getWidth()+seenRemaining)/2);
+            }
+          }
         }
         const remaining=2*Math.max(0,distance-big.getWidth()/2);
         if(remaining>=small.getWidth()) continue;
         const matter=small.getWidth()**2-remaining**2;
         const center={x:big.getCenterXInScene(),y:big.getCenterYInScene()};
         setObjectSizeAndShape(big,Math.sqrt(big.getWidth()**2+matter));
-        moveObjectToCenter(big,center.x,center.y);
+        setObjectCenterExact(big,center.x,center.y);
         if(remaining<1) {
           recordMultiplayerAbsorption(runtimeScene,[big],[small]);
           deleteRuntimeObjectTree(runtimeScene,small);
         } else {
           const x=small.getCenterXInScene(),y=small.getCenterYInScene();
-          setObjectSizeAndShape(small,remaining); moveObjectToCenter(small,x,y);
+          setObjectSizeAndShape(small,remaining); setObjectCenterExact(small,x,y);
         }
       }
     }
-    if (room.isHost && !beforeEvents) state.previousPositions=new Map(runtimeScene.getObjects("Player").map(p=>[p.__headSpaceRoomPlayerNumber,{x:p.getCenterXInScene(),y:p.getCenterYInScene()}]));
+    if (room.isHost && !beforeEvents) state.previousPositions=new Map(runtimeScene.getObjects("Player").map(p=>[p.__headSpaceRoomPlayerNumber,{x:p.getCenterXInScene(),y:p.getCenterYInScene(),portal:!!(p.__headSpaceBlackHoleTransit || p.__headSpaceLevelNinePortalTransit || p.__headSpaceNetworkPortalTransit)}]));
     if (beforeEvents || performance.now()-state.sentAt<40) return;
     state.sentAt=performance.now();
     const local=players.find(p=>p.__headSpaceRoomPlayerNumber===room.localPlayerNumber);
@@ -24697,7 +24731,12 @@
       seq:++state.seq,players:runtimeScene.getObjects("Player").filter(p=>!p.isDeleted?.()).map(capture),
       actors:[...runtimeScene.getObjects("Enemy"),...runtimeScene.getObjects("SmartEnemy")].filter(o=>o.__headSpaceArenaId).map(capture),
       won:!!sceneState.get(runtimeScene)?.multiplayerOutcomeAuthorized && (getSceneBoolean(runtimeScene,"LevelWon") || getSceneBoolean(runtimeScene,"LevelLost"))
-    } : {seq:++state.seq,ejectedMass:state.ejectedMass,player:local ? capture(local) : null};
+    } : {seq:++state.seq,worldSeq:service.getWorldState()?.seq,ejectedMass:state.ejectedMass,player:local ? capture(local) : null};
+    if(room.isHost) {
+      const snapshots=state.contactSnapshots || (state.contactSnapshots=new Map());
+      snapshots.set(packet.seq,{at:performance.now(),players:packet.players});
+      for(const [seq,snapshot] of snapshots) if(performance.now()-snapshot.at>500) snapshots.delete(seq);
+    }
     service.exchangeState(packet);
   }
 
