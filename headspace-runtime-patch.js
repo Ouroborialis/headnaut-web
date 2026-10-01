@@ -20183,6 +20183,22 @@
       return;
     }
 
+    // Give the single-player opening three clear size relationships, even
+    // when the authored enemies already have different sizes.
+    if (getCurrentLevel(runtimeScene) === 1 && !isMultiplayerGame(runtimeScene, 1)) {
+      const player = runtimeScene.getObjects("Player")[0];
+      if (!player || player.getWidth() <= 0) return;
+      const ratios = [0.4, 0.8, 1.1];
+      enemies.slice(0, ratios.length).forEach((enemy, index) => {
+        const x = enemy.getCenterXInScene();
+        const y = enemy.getCenterYInScene();
+        setObjectSizeAndShape(enemy, player.getWidth() * ratios[index]);
+        setObjectCenterExact(enemy, x, y);
+      });
+      state.enemySizeInitialized = true;
+      return;
+    }
+
     const sizes = enemies.map((enemy) => enemy.getWidth());
     const minSize = Math.min(...sizes);
     const maxSize = Math.max(...sizes);
