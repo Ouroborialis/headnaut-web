@@ -15,6 +15,8 @@
       uniform vec2 orbRadius;
       uniform float orbTime;
       uniform float orbPhase;
+      uniform vec3 orbHue;
+      uniform float hueAmount;
       float bayer2(vec2 p) {
         vec2 b = mod(p, 2.0);
         return 2.0 * b.x + 3.0 * b.y - 4.0 * b.x * b.y;
@@ -27,6 +29,8 @@
         // Quantize straight RGB, then restore premultiplication so the soft
         // transparent rim cannot acquire dark boxes or colored fringes.
         vec3 color = sampleColor.rgb / max(sampleColor.a, 0.0001);
+        float energy = max(color.r, max(color.g, color.b));
+        color = mix(color, orbHue * energy, hueAmount);
         float core = 1.0 - smoothstep(0.1, 0.9, radius);
         color = color * (0.86 + pulse * 0.38) + vec3(0.10, 0.35, 0.40) * core * pulse;
         vec2 cell = floor(vTextureCoord * inputSize.xy / 2.0);
@@ -41,11 +45,11 @@
         float ring = (1.0 - smoothstep(0.012, 0.045, abs(radius - ringRadius)))
           * sin(progress * 3.14159265) * 0.24;
         float glowAlpha = clamp(halo + ring, 0.0, 0.32);
-        vec3 glow = vec3(0.12, 0.85, 1.0) * glowAlpha;
+        vec3 glow = mix(vec3(0.12, 0.85, 1.0), orbHue, hueAmount) * glowAlpha;
         gl_FragColor = vec4(dithered * sampleColor.a + glow * (1.0 - sampleColor.a),
           sampleColor.a + glowAlpha * (1.0 - sampleColor.a));
       }
-    `, {orbCenter: [0, 0], orbRadius: [1, 1], orbTime: 0, orbPhase: (++nextOrb * 2.399963) % 6.283185});
+    `, {orbCenter: [0, 0], orbRadius: [1, 1], orbTime: 0, orbPhase: (++nextOrb * 2.399963) % 6.283185,orbHue:[1,1,1],hueAmount:0});
     filter.padding = 0;
     filter.resolution = 1;
     filter.__headSpaceOrbDither = true;
@@ -58,8 +62,8 @@
       state.time += Math.min(0.05, Math.max(0, scene.getElapsedTime() / 1000));
     }
     const active = new Set();
-    for (const name of ["EmittedMaterial", "EmittedMaterialImage"]) {
-      for (const orb of scene.getObjects(name)) {
+    for (const objects of [scene.getObjects("EmittedMaterial"), scene.getObjects("EmittedMaterialImage"), scene.__headSpaceRemoteOrbVisuals || []]) {
+      for (const orb of objects) {
         const sprite = orb.getRendererObject?.();
         if (!sprite || sprite.destroyed || !sprite.visible) continue;
         let record = state.orbs.get(orb);
@@ -73,6 +77,8 @@
         }
         active.add(orb);
         const effect = record.effect;
+        effect.uniforms.orbHue = sprite.__headSpaceOrbHue || [1,1,1];
+        effect.uniforms.hueAmount = sprite.__headSpaceOrbHue ? 0.85 : 0;
         const bounds = sprite.getBounds();
         effect.uniforms.orbCenter = [bounds.x + bounds.width / 2, bounds.y + bounds.height / 2];
         effect.uniforms.orbRadius = [Math.max(1, bounds.width / 2), Math.max(1, bounds.height / 2)];

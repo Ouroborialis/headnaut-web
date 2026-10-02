@@ -931,6 +931,7 @@
   function isMultiplayerDomInputOwned() {
     return Boolean(
       globalThis.HeadSpaceMultiplayerSetup?.isOpen?.() ||
+      globalThis.HeadSpaceMultiplayerService?.getFlow?.()?.blocked ||
       performance.now() < multiplayerInputSuppressedUntil ||
       (activeRuntimeScene?.__headSpaceRoomSync && !activeRuntimeScene.getObjects("Player").some(player =>
         player.__headSpaceRoomPlayerNumber === globalThis.HeadSpaceMultiplayerService?.getRoom?.()?.localPlayerNumber))
@@ -1579,6 +1580,10 @@
       const multiplayer = isMultiplayerGame(activeRuntimeScene, getCurrentLevel(activeRuntimeScene));
       destinationButton.dataset.action = multiplayer ? "multiplayer" : "level-select";
       destinationButton.textContent = multiplayer ? "MULTIPLAYER" : "LEVEL SELECT";
+      const room=globalThis.HeadSpaceMultiplayerService?.getRoom?.();
+      if(room && !room.isHost)destinationButton.textContent="LEAVE ROOM";
+      const retry=overlay.querySelector('button[data-action="retry"]');
+      if(retry){retry.disabled=!!room;retry.style.opacity=room?".45":"1";retry.title=room?"The host starts the next round from the results screen.":"";}
     }
     overlay.style.display = visible ? "flex" : "none";
   }
@@ -1642,7 +1647,7 @@
     const authorized =
       sceneState.get(runtimeScene)?.multiplayerOutcomeAuthorized === true;
     const visible = multiplayer && authorized && (levelWon || levelLost);
-    overlay.style.display = visible ? "flex" : "none";
+    overlay.style.display = visible && !globalThis.HeadSpaceMultiplayerService?.getRoom?.() ? "flex" : "none";
     if (!visible) return false;
     const mode = getMultiplayerGameMode(runtimeScene);
     overlay.querySelector('[data-role="title"]').textContent = levelWon
@@ -2310,7 +2315,7 @@
             multiplayerAbsorbSnapshot = {
               absorbers: getObjectsFromObjectMap(Object).slice(),
               eaten: getObjectsFromObjectMap(Eaten)
-                .filter((object) => object?.getName?.() === "Player" || object?.getName?.() === "SmartEnemy")
+                .filter((object) => ["Player","SmartEnemy","Enemy"].includes(object?.getName?.()))
                 .map((object) => ({
                   object,
                   name: object.getName?.() || "",
@@ -2415,6 +2420,11 @@
       try {
         applyLevelTwelveCosmicAlienAbsorbBonuses(cosmicAlienBonuses);
         if (multiplayerAbsorbSnapshot) {
+          const absorber=multiplayerAbsorbSnapshot.absorbers.find(o=>o.getName?.()==="Player");
+          if(absorber)for(const entry of multiplayerAbsorbSnapshot.eaten) {
+            const remaining=runtimeScene.getObjects(entry.name).includes(entry.object)?entry.object.getWidth():0;
+            if(remaining<entry.width)notifyRoomAbsorption(runtimeScene,absorber,entry.object,remaining<1);
+          }
           const actuallyAbsorbed = multiplayerAbsorbSnapshot.eaten
             .filter((entry) => {
               const stillInScene = runtimeScene
@@ -22583,6 +22593,8 @@
       setHudVisible(false);
       setPauseOverlayVisible(false);
       const launchMultiplayerMatch = (room) => {
+        const runtimeScene = activeRuntimeScene;
+        if(!runtimeScene)return;
         const level = Number(room?.level);
         if (!isPlayableLevel(level)) return;
         const gameVariables = runtimeScene.getGame().getVariables();
@@ -22613,7 +22625,15 @@
         // the new scene renderer attached to the canvas.
         queuePauseMenuNavigation(runtimeScene, level);
       };
+      const returnRoomToLobby = () => {
+        if(!activeRuntimeScene)return;
+        multiplayerSelectionSnapshotAfterNavigation=capturePlayerSelectionSnapshot(activeRuntimeScene);
+        openMultiplayerSetupAfterNavigation=true;
+        multiplayerSetupNavigationSourceScene=activeRuntimeScene;
+        queuePauseMenuNavigation(activeRuntimeScene,0);
+      };
       setup.open({
+        room: globalThis.HeadSpaceMultiplayerService?.getRoom?.(),
         avatar: {
           characterUrl: getSelectedCharacterUrl(runtimeScene),
           helmetUrl: getSelectedHelmetUrl(runtimeScene),
@@ -22630,11 +22650,11 @@
           setRuntimeTimeScale(runtimeScene, 1);
           syncHomeMenuActionButtons(runtimeScene, true);
         },
-        onCreateRoom: async () => {
+        onCreateRoom: async name => {
           const service = globalThis.HeadSpaceMultiplayerService;
           if (!service?.createRoom) throw new Error("Multiplayer service adapter is unavailable.");
           return service.createRoom(runtimeScene, {
-            name: gdjs.playerAuthentication?.getUsername?.() || "YOU",
+            name: name || gdjs.playerAuthentication?.getUsername?.() || "PLAYER 1",
             characterUrl: getSelectedCharacterUrl(runtimeScene),
             helmetUrl: getSelectedHelmetUrl(runtimeScene),
             characterIndex: characterCarouselIndex,
@@ -22642,13 +22662,14 @@
           }, {
             onRoomUpdate: room => setup.updateRoom(room),
             onStart: launchMultiplayerMatch,
+            onLobby: returnRoomToLobby,
           });
         },
-        onJoinRoom: async code => {
+        onJoinRoom: async (code,name) => {
           const service = globalThis.HeadSpaceMultiplayerService;
           if (!service?.joinRoom) throw new Error("Multiplayer service adapter is unavailable.");
           return service.joinRoom(runtimeScene, code, {
-            name: gdjs.playerAuthentication?.getUsername?.() || "YOU",
+            name: name || gdjs.playerAuthentication?.getUsername?.() || "PLAYER 2",
             characterUrl: getSelectedCharacterUrl(runtimeScene),
             helmetUrl: getSelectedHelmetUrl(runtimeScene),
             characterIndex: characterCarouselIndex,
@@ -22656,6 +22677,7 @@
           }, {
             onRoomUpdate: room => setup.updateRoom(room),
             onStart: launchMultiplayerMatch,
+            onLobby: returnRoomToLobby,
           });
         },
         onSettingsChange: match => {
@@ -23115,6 +23137,7 @@
     }
 
     if (action === "home") {
+      globalThis.HeadSpaceMultiplayerService?.leave?.();
       queuePauseMenuNavigation(runtimeScene, 0);
       return;
     }
@@ -23125,6 +23148,8 @@
     }
 
     if (action === "multiplayer") {
+      const room=globalThis.HeadSpaceMultiplayerService?.getRoom?.();
+      if(room?.status==="playing") {if(room.isHost){globalThis.HeadSpaceMultiplayerService.returnToLobby();return;}globalThis.HeadSpaceMultiplayerService.leave();}
       multiplayerSelectionSnapshotAfterNavigation = capturePlayerSelectionSnapshot(runtimeScene);
       openMultiplayerSetupAfterNavigation = true;
       // CurrentLevel changes before replaceScene finishes. Keep the outgoing
@@ -23138,6 +23163,8 @@
     }
 
     if (action === "retry") {
+      const room=globalThis.HeadSpaceMultiplayerService?.getRoom?.();
+      if(room?.status==="playing") {if(room.isHost && room.phase==="results")globalThis.HeadSpaceMultiplayerService.startRoom();return;}
       queuePauseMenuNavigation(runtimeScene, getCurrentLevel(runtimeScene));
     }
   }
@@ -23352,6 +23379,7 @@
     }
     if (flushQueuedPauseMenuNavigation(runtimeScene)) return;
     syncPrivateRoomGameplay(runtimeScene, true);
+    syncPrivateRoomFlow(runtimeScene);
 
     const level = getCurrentLevel(runtimeScene);
     if (Number(level) === 0) captureCharacterCarouselSelection(runtimeScene);
@@ -24593,6 +24621,63 @@
     return true;
   }
 
+  function notifyRoomAbsorption(runtimeScene,big,small,complete) {
+    const service=globalThis.HeadSpaceMultiplayerService;
+    if(!service?.getRoom?.()?.isHost)return;
+    const times=runtimeScene.__headSpaceAbsorbFeedback || (runtimeScene.__headSpaceAbsorbFeedback=new WeakMap());
+    if(!complete && performance.now()-(times.get(small)||-Infinity)<140)return;
+    times.set(small,performance.now());
+    service.reportAbsorption?.({from:small.__headSpaceRoomPlayerNumber||0,to:big.__headSpaceRoomPlayerNumber,
+      fromX:small.getCenterXInScene(),fromY:small.getCenterYInScene(),toX:big.getCenterXInScene(),toY:big.getCenterYInScene(),complete});
+  }
+
+  function syncPrivateRoomFlow(runtimeScene,afterEvents=false) {
+    const service=globalThis.HeadSpaceMultiplayerService;
+    let room=service?.getRoom?.();
+    if(!room || room.status!=="playing" || !isPlayableLevel(getCurrentLevel(runtimeScene)) || !runtimeScene.__headSpaceRoomSync || runtimeScene.__headSpaceRoomSync.round!==room.round) {
+      if(afterEvents)globalThis.HeadSpaceRoomUI?.hide?.();return;
+    }
+    // The first complete render pass has constructed the arena and companions.
+    if(afterEvents && runtimeScene.getObjects("Player").length && runtimeScene.getObjects("Player").every(p=>
+      [p.__headSpaceImageCompanion,p.__headSpaceHelmetCompanion].every(o=>o?.getRendererObject?.()?.texture?.valid)))service.arenaReady?.();
+    if(room.isHost) {
+      for(const p of runtimeScene.getObjects("Player").slice()) {
+        if(room.players.find(member=>member.playerNumber===p.__headSpaceRoomPlayerNumber)?.expired)deleteRuntimeObjectTree(runtimeScene,p);
+      }
+      const live=runtimeScene.getObjects("Player").map(p=>p.__headSpaceRoomPlayerNumber);
+      if(room.phase==="playing" && room.mode==="head-to-head" && room.players.some(p=>p.expired) && live.length<=1)service.finishRound?.(live,"disconnect");
+      else if(sceneState.get(runtimeScene)?.multiplayerOutcomeAuthorized)service.finishRound?.(room.mode==="hunt-the-boss"?room.players.filter(p=>!p.expired).map(p=>p.playerNumber):live);
+    }
+    room=service.getRoom();
+    if(room.phase==="results") {
+      const won=room.result?.winners?.includes(room.localPlayerNumber);
+      ensureSceneState(runtimeScene,getCurrentLevel(runtimeScene)).multiplayerOutcomeAuthorized=true;
+      setSceneBoolean(runtimeScene,"LevelWon",!!won);setSceneBoolean(runtimeScene,"LevelLost",!won);
+      if(afterEvents)for(const name of ["Button","Button_Text","ButtonMulti","Button_Multi_Text","HomeButton","HomeButtonText","Message1","Message2","Message3"])for(const object of runtimeScene.getObjects(name))object.hide(true);
+    }
+    const flow=service.getFlow?.();
+    if(["loading","countdown"].includes(room.phase)) {
+      const local=runtimeScene.getObjects("Player").find(p=>p.__headSpaceRoomPlayerNumber===room.localPlayerNumber);
+      if(local)for(const layer of ["","Texture","Lighting"]) {
+        gdjs.evtTools.camera.setCameraX(runtimeScene,local.getCenterXInScene(),layer,0);
+        gdjs.evtTools.camera.setCameraY(runtimeScene,local.getCenterYInScene(),layer,0);
+      }
+    }
+    if(flow?.blocked) {
+      if(!runtimeScene.__headSpaceRoomFreeze)runtimeScene.__headSpaceRoomFreeze={paused:getSceneBoolean(runtimeScene,"Paused")};
+      setSceneBoolean(runtimeScene,"Paused",true);setRuntimeTimeScale(runtimeScene,0);
+      pendingTouchShot=null;
+      if(afterEvents)setPauseOverlayVisible(false);
+    } else if(runtimeScene.__headSpaceRoomFreeze) {
+      const paused=runtimeScene.__headSpaceRoomFreeze.paused;
+      delete runtimeScene.__headSpaceRoomFreeze;
+      setSceneBoolean(runtimeScene,"Paused",paused);setRuntimeTimeScale(runtimeScene,paused?0:1);
+    }
+    if(afterEvents)globalThis.HeadSpaceRoomUI?.update?.(runtimeScene,room,flow,()=>{
+      service.leave();globalThis.HeadSpaceRoomUI?.hide?.();queuePauseMenuNavigation(runtimeScene,0);
+    });
+  }
+
   // Private rooms use explicit snapshots: this export has no MultiplayerObject
   // behavior. The host owns arena state and absorption; clients send their own motion.
   function syncPrivateRoomGameplay(runtimeScene, beforeEvents = false) {
@@ -24600,6 +24685,7 @@
     const room = service?.getRoom?.();
     if (room?.status !== "playing" || !isMultiplayerGame(runtimeScene, getCurrentLevel(runtimeScene))) return;
     let state = runtimeScene.__headSpaceRoomSync;
+    if(state && state.round!==room.round)return;
     if (!state) {
       if (beforeEvents) return;
       const players = runtimeScene.getObjects("Player");
@@ -24633,7 +24719,7 @@
         const point = spawns[(player.__headSpaceRoomPlayerNumber || 1)-1];
         if (point) moveObjectToCenter(player,point.x,point.y);
       }
-      state = runtimeScene.__headSpaceRoomSync = {sentAt:0,seq:0,received:new Map(),ejectedMass:0,acceptedMass:new Map()};
+      state = runtimeScene.__headSpaceRoomSync = {round:room.round,sentAt:0,seq:0,received:new Map(),ejectedMass:0,acceptedMass:new Map()};
       for (const name of ["Enemy","SmartEnemy"]) runtimeScene.getObjects(name).forEach((o,i)=>o.__headSpaceArenaId=`${name}-${i}`);
     }
     const apply = (object, packet, motionOnly = false) => {
@@ -24653,6 +24739,12 @@
     const players=runtimeScene.getObjects("Player");
     if (room.isHost) {
       for (const [number,packet] of service.getRemoteStates()) {
+        const epoch=room.players.find(p=>p.playerNumber===number)?.connectionEpoch||0;
+        const epochs=state.receivedEpochs || (state.receivedEpochs=new Map());
+        if(epochs.get(number)!==epoch) {
+          epochs.set(number,epoch);state.received.delete(number);state.previousPositions?.delete(number);
+          for(const key of state.observedContactSequences?.keys?.()||[])if(key.startsWith(`${number}:`)||key.endsWith(`:${number}`))state.observedContactSequences.delete(key);
+        }
         if (!packet || packet.seq < (state.received.get(number)||0)) continue;
         const player=players.find(p=>p.__headSpaceRoomPlayerNumber===number);
         apply(player, packet.player, true);
@@ -24674,11 +24766,15 @@
       }
       const world=service.getWorldState();
       if (world?.players) {
+        if(service.consumeRestore?.())state.restoreLocal=true;
         for (const player of players.slice()) {
           const number=player.__headSpaceRoomPlayerNumber;
           const packet=world.players.find(p=>p.id===number);
           if (!packet) { deleteRuntimeObjectTree(runtimeScene,player); continue; }
-          if (number !== room.localPlayerNumber) apply(player,packet);
+          if (number !== room.localPlayerNumber || state.restoreLocal) {
+            apply(player,packet);
+            if(number===room.localPlayerNumber){state.restoreLocal=false;state.ejectedMass=packet.acceptedMass||0;state.localSizeBeforeEvents=player.getWidth();ensureSceneState(runtimeScene,getCurrentLevel(runtimeScene)).firstOrbFired=true;}
+          }
           else if (beforeEvents && Number.isFinite(packet.size) && packet.size>0) {
             const x=player.getCenterXInScene(),y=player.getCenterYInScene();
             setObjectSizeAndShape(player,Math.sqrt(Math.max(1,packet.size**2-Math.max(0,state.ejectedMass-(packet.acceptedMass||0)))));
@@ -24747,9 +24843,16 @@
             }
           }
         }
-        const remaining=2*Math.max(0,distance-big.getWidth()/2);
+        // Physics can leave two touching circles a fraction of a pixel apart.
+        // Treat that narrow contact band as a bite instead of requiring visible
+        // penetration. Size advantage, host authority and portal immunity still apply.
+        const touching = distance <= (big.getWidth()+small.getWidth())/2 + 0.5;
+        const remaining=touching
+          ? Math.min(2*Math.max(0,distance-big.getWidth()/2),Math.max(0,small.getWidth()-0.5))
+          : 2*Math.max(0,distance-big.getWidth()/2);
         if(remaining>=small.getWidth()) continue;
         const matter=small.getWidth()**2-remaining**2;
+        notifyRoomAbsorption(runtimeScene,big,small,remaining<1);
         const center={x:big.getCenterXInScene(),y:big.getCenterYInScene()};
         setObjectSizeAndShape(big,Math.sqrt(big.getWidth()**2+matter));
         setObjectCenterExact(big,center.x,center.y);
@@ -24776,6 +24879,7 @@
       snapshots.set(packet.seq,{at:performance.now(),players:packet.players});
       for(const [seq,snapshot] of snapshots) if(performance.now()-snapshot.at>500) snapshots.delete(seq);
     }
+    packet.orbs = globalThis.HeadSpaceRoomOrbs?.capture(runtimeScene,room) || [];
     service.exchangeState(packet);
   }
 
@@ -24908,5 +25012,6 @@
     updateBoostCometsAfterLayout(runtimeScene, levelFiveBoostSystemState.get(runtimeScene));
     updateBoostCometsAfterLayout(runtimeScene, sharedMultiplayerSystem);
     syncMultiplayerActorLightObstacles(runtimeScene);
+    syncPrivateRoomFlow(runtimeScene,true);
   });
 })();

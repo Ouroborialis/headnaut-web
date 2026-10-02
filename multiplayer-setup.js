@@ -50,7 +50,7 @@
 
   function open(options = {}) {
     close();
-    room = null;
+    room = options.room || null;
     const availableLevels = Array.isArray(options.availableLevels) && options.availableLevels.length
       ? options.availableLevels
       : Array.from({ length: LEVEL_COUNT }, (_, index) => index + 1);
@@ -154,6 +154,7 @@
           <section class="mp-panel"><h2>SELECT LEVEL</h2><div class="mp-levels"></div><div class="mp-mode-title">MODE</div><div class="mp-modes"><button class="mp-mode" data-mode="head-to-head" aria-pressed="true" type="button">HEAD TO HEAD</button><button class="mp-mode" data-mode="hunt-the-boss" aria-pressed="false" type="button">HUNT THE BOSS</button></div><p class="mp-note">Head to Head: absorb the other players. Hunt the Boss: work together to absorb the boss.</p></section>
           <section class="mp-panel mp-actions">
             <h2>PRIVATE ROOM</h2>
+            <label class="mp-note" for="headnaut-player-name">Your name</label><input id="headnaut-player-name" data-name aria-label="Your player name" maxlength="20" autocomplete="nickname" placeholder="PLAYER NAME" style="text-transform:none;letter-spacing:.5px">
             <button class="mp-primary" data-create type="button">CREATE ROOM</button>
             <div class="mp-room-row"><input data-code aria-label="Room code" maxlength="6" autocomplete="off" placeholder="ROOM CODE"><button class="mp-join" data-join type="button">JOIN ROOM</button></div>
             <div class="mp-social"><button data-invite type="button" disabled>INVITE FRIENDS</button><button data-copy-code type="button" disabled>COPY ROOM CODE</button></div>
@@ -208,6 +209,9 @@
     const levels = root.querySelector(".mp-levels");
     const status = root.querySelector(".mp-status");
     const codeInput = root.querySelector("[data-code]");
+    const nameInput = root.querySelector("[data-name]");
+    try {nameInput.value=localStorage.getItem("headnaut-player-name")||"";}catch{}
+    const selectedName=()=>{const name=nameInput.value.trim().slice(0,20);try{localStorage.setItem("headnaut-player-name",name);}catch{}return name;};
     const startButton = root.querySelector("[data-start]");
     const createButton = root.querySelector("[data-create]");
     const joinButton = root.querySelector("[data-join]");
@@ -221,7 +225,7 @@
     };
     const modeLabel = () => selectedMode === "hunt-the-boss" ? "Hunt the Boss" : "Head to Head";
     const syncRoomSelection = () => room?.isHost && options.onSettingsChange?.({ level: selectedLevel, mode: selectedMode });
-    const presenceColor = player => ["#32ff68", "#ff55bc", "#ffbd45", "#73a5ff"][(Number(player.playerNumber) || 1) - 1];
+    const presenceColor = player => globalThis.HeadSpaceMultiplayerService.playerColor(player.playerNumber);
     const cursors = document.createElement("div");
     Object.assign(cursors.style, {position:"absolute",inset:"0",pointerEvents:"none",zIndex:"10"});
     shell.style.position = "relative";
@@ -258,7 +262,7 @@
       const players = Array.isArray(room?.players) && room.players.length
         ? room.players.slice(0, 4)
         : [{ id: "local-player", name: "YOU", host: true, ready: true }];
-      const key=JSON.stringify(players.map(({cursor,...player})=>player));
+      const key=JSON.stringify(players.map(p=>[p.playerNumber,p.name,p.connection,p.wins,p.characterIndex,p.helmetIndex]));
       if (key===playerListKey) return;
       playerListKey=key;
       playerHeading.textContent = `PLAYERS (${players.length}/4)`;
@@ -278,11 +282,11 @@
         const copy = document.createElement("div");
         const name = document.createElement("div");
         name.className = "mp-player-name";
-        name.textContent = player.playerNumber === room?.localPlayerNumber ? "YOU" : (player.name && player.name !== "YOU" ? player.name : `PLAYER ${player.playerNumber}`);
+        name.textContent = `${player.name && player.name!=="YOU"?player.name:`PLAYER ${player.playerNumber||1}`}${player.playerNumber===room?.localPlayerNumber?" · YOU":""}`;
         row.style.borderLeft = `4px solid ${presenceColor(player)}`;
         const role = document.createElement("div");
         role.className = "mp-player-role";
-        role.textContent = `${player.host ? "HOST" : "PLAYER"} · ${player.ready === false ? "WAITING" : "READY"}`;
+        role.textContent = `${player.host ? "HOST" : "PLAYER"} · ${player.connection==="reconnecting"?"RECONNECTING":player.expired?"LEFT":"READY"} · ${player.wins||0} WINS`;
         copy.append(name, role);
         row.append(avatar, copy);
         playerList.appendChild(row);
@@ -293,6 +297,7 @@
       if (room?.mode) selectedMode = room.mode;
       const inRoom = !!room;
       const isHost = !!room?.isHost;
+      nameInput.disabled=inRoom;
       codeInput.value = room?.code || codeInput.value;
       codeInput.readOnly = inRoom;
       codeInput.classList.toggle("mp-room-code-live", inRoom);
@@ -312,10 +317,12 @@
       }
       renderPlayers();
       renderPresence();
-      startButton.disabled = !isHost || !selectedLevel || (room?.players?.length || 0) < 2;
+      startButton.disabled = !isHost || !selectedLevel || (room?.players?.length || 0) < 2 || room.players.some(p=>p.connection!=="connected" || p.expired);
       if (inRoom) setStatus(isHost
         ? ((room.players?.length || 0) < 2 ? `Room ${room.code} is ready. Waiting for another player.` : selectedLevel ? `Everyone is ready. Start Level ${selectedLevel} when you are ready.` : "Player joined. Choose a level and mode.")
         : (selectedLevel ? `Host selected Level ${selectedLevel} - ${modeLabel()}. Waiting for host to start.` : "Connected. Waiting for the host to choose the match."));
+      if(room?.closed){setStatus(room.closed,true);startButton.disabled=true;}
+      else if(room?.players?.some(p=>p.connection==='reconnecting'))setStatus('Connection interrupted. Reconnecting to the room...',true);
       requestAnimationFrame(() => root.isConnected && fitSetupToViewport());
     };
     root.__renderRoom = renderRoom;
@@ -376,7 +383,7 @@
       }
       createButton.disabled = true;
       setStatus("Creating your private room...");
-      try { updateRoom(await options.onCreateRoom()); }
+      try { updateRoom(await options.onCreateRoom(selectedName())); }
       catch (error) {
         console.error("Unable to create private room.", error);
         createButton.disabled = false;
@@ -397,7 +404,7 @@
       codeInput.value = code;
       joinButton.disabled = true;
       setStatus(`Joining room ${code}...`);
-      try { updateRoom(await options.onJoinRoom?.(code)); }
+      try { updateRoom(await options.onJoinRoom?.(code,selectedName())); }
       catch (error) {
         joinButton.disabled = false;
         setStatus(error?.message || "Unable to join that room.", true);

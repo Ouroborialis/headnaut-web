@@ -1,7 +1,9 @@
 (function (root) {
   "use strict";
 
-  const VERSION = "20260921-room-presence-5";
+  const VERSION = "20260923-room-rounds-1";
+  const COLORS = ["#32ff68", "#ff55bc", "#ffbd45", "#73a5ff"];
+  const REJOIN_MS = 20000;
   const ROOM_PREFIX = "headnaut-room-";
   const CODE_LENGTH = 6;
   const MAX_PLAYERS = 4;
@@ -34,7 +36,7 @@
     return Array.from(bytes, byte => ALPHABET[byte % ALPHABET.length]).join("");
   };
   const profileOf = (profile, fallback) => ({
-    name: String(profile?.name || fallback).slice(0, 24),
+    name: String(profile?.name || fallback).replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0, 20) || fallback,
     characterUrl: String(profile?.characterUrl || ""),
     helmetUrl: String(profile?.helmetUrl || ""),
     characterIndex: Number.isFinite(Number(profile?.characterIndex)) ? Number(profile.characterIndex) : 0,
@@ -49,6 +51,9 @@
     status: session.started ? "playing" : session.level ? "ready" : "waiting-for-level",
     isHost: session.isHost,
     localPlayerNumber: session.playerNumber,
+    round: session.round || 0, phase: session.phase || "lobby", startAt: session.startAt || 0,
+    result: session.result || null, closed: session.closed || "",
+    connectionPaused: !!session.connectionPaused,
     players: session.players.slice().sort((a, b) => a.playerNumber - b.playerNumber).map(player => ({ ...player })),
   } : null;
   const emitRoom = () => {
@@ -90,12 +95,48 @@
     session.level = Number(room.level) || null;
     session.mode = room.mode === "hunt-the-boss" ? "hunt-the-boss" : "head-to-head";
     session.players = Array.isArray(room.players) ? room.players.map(player => ({ ...player })) : [];
+    session.round = room.round || 0;
+    session.phase = room.phase || "lobby";
+    session.startAt = room.startAt || 0;
+    session.result = room.result || null;
+    session.connectionPaused = !!room.connectionPaused;
     emitRoom();
   }
 
   function handleRoomMessage(peerId, data) {
     if (!session || data?.__headnautRoom !== VERSION) return false;
-    if (data.type === "activity" && session.isHost && !session.started) {
+    session.lastSeen.set(peerId,Date.now());
+    if(!session.isHost && peerId===session.hostPeerId)session.hostMissingSince=0;
+    const sender = session.players.find(item=>item.peerId===peerId);
+    if (sender && !sender.expired && sender.connection!=="connected") {
+      sender.connection="connected"; sender.rejoinUntil=0;
+      if(session.isHost) {refreshConnectionPause();emitRoom();broadcastRoom();}
+    }
+    if(data.type==="ping") {
+      sendRoom(session.connections.get(peerId),{type:"pong",sentAt:data.sentAt,hostNow:session.isHost?Date.now():null});
+    } else if(data.type==="pong") {
+      const rtt=Math.max(0,Date.now()-Number(data.sentAt));
+      if(sender) sender.ping=Math.round(rtt);
+      if(!session.isHost && Number.isFinite(data.hostNow)) session.clockOffset=data.hostNow-(Number(data.sentAt)+Date.now())/2;
+    } else if(data.type==="arena-ready" && session.isHost && sender && data.round===session.round) {
+      sender.loaded=true;sender.rejoinUntil=0;refreshConnectionPause();maybeCountdown();emitRoom();broadcastRoom();
+    } else if(data.type==="health" && !session.isHost && peerId===session.hostPeerId && data.round===session.round) {
+      const numbers=new Set((data.players||[]).map(p=>p.playerNumber));
+      session.players=session.players.filter(p=>numbers.has(p.playerNumber));
+      for(const status of data.players||[]) {const p=session.players.find(p=>p.playerNumber===status.playerNumber);if(p)Object.assign(p,status);}
+      session.connectionPaused=!!data.connectionPaused;session.phase=data.phase;session.startAt=data.startAt||0;emitRoom();
+    } else if(data.type==="round" && !session.isHost && peerId===session.hostPeerId && data.room.round===session.round) {
+      applySnapshot(data.room);
+    } else if(data.type==="lobby" && !session.isHost && peerId===session.hostPeerId) {
+      session.started=false;session.worldState=null;session.remoteStates.clear();
+      applySnapshot(data.room);configureGame(false);session.onLobby?.(roomOf());
+    } else if(data.type==="closed" && !session.isHost && peerId===session.hostPeerId) {
+      session.closed="The host closed the room.";emitRoom();
+    } else if(data.type==="leave" && session.isHost && sender) {
+      sender.expired=true;sender.connection="left";sender.rejoinUntil=0;refreshConnectionPause();emitRoom();broadcastRoom();
+    } else if(data.type==="absorption" && !session.isHost && peerId===session.hostPeerId && data.round===session.round) {
+      session.feedback.push({...data.event,at:Date.now()});session.feedback=session.feedback.slice(-32);
+    } else if (data.type === "activity" && session.isHost && !session.started) {
       const player = session.players.find(item => item.peerId === peerId);
       if (player) {
         applyActivity(player, data.activity); emitRoom();
@@ -104,38 +145,64 @@
     } else if (data.type === "presence" && !session.isHost && peerId === session.hostPeerId && !session.started) {
       const player=session.players.find(item=>item.playerNumber===data.playerNumber);
       if(player) { applyActivity(player,data.activity); emitRoom(); }
-    } else if (data.type === "state" && session.started) {
+    } else if (data.type === "state" && session.started && data.round===session.round) {
       const sender = session.players.find(item => item.peerId === peerId);
-      if (session.isHost && sender) session.remoteStates.set(sender.playerNumber, data.state);
-      else if (!session.isHost && peerId === session.hostPeerId) session.worldState = data.state;
+      if (session.isHost && sender && !sender.expired && data.state?.seq>(session.remoteStates.get(sender.playerNumber)?.seq||0)) session.remoteStates.set(sender.playerNumber, data.state);
+      else if (!session.isHost && peerId === session.hostPeerId && data.state?.seq>(session.worldState?.seq||0)) session.worldState = data.state;
     } else if (data.type === "hello" && session.isHost) {
       let player = session.players.find(item => item.peerId === peerId);
+      const token=String(data.token||"");
+      const returning=session.tokens.get(token);
+      if(player && (player.expired || returning!==player.playerNumber)) {
+        sendRoom(session.connections.get(peerId),{type:"rejected",reason:"EXPIRED"});return true;
+      }
+      if(!player && returning) {
+        player=session.players.find(p=>p.playerNumber===returning);
+        if(!player || player.expired || (player.rejoinUntil && player.rejoinUntil<Date.now())) {
+          sendRoom(session.connections.get(peerId),{type:"rejected",reason:"EXPIRED"});return true;
+        }
+        const oldPeer=player.peerId;
+        player.id=peerId;player.peerId=peerId;player.connection="connected";player.rejoinUntil=0;
+        session.remoteStates.delete(player.playerNumber);
+        if(oldPeer!==peerId) {const old=session.connections.get(oldPeer);session.connections.delete(oldPeer);old?.close();}
+      }
       if (!player) {
         const playerNumber = nextPlayerNumber();
-        if (!playerNumber) {
+        if (!playerNumber || session.started || !/^[a-f0-9]{32}$/.test(token)) {
           sendRoom(session.connections.get(peerId), { type: "rejected", reason: "ROOM_FULL" });
           session.connections.get(peerId)?.close();
           return true;
         }
-        player = { id: peerId, peerId, playerNumber, ...profileOf(data.profile, `PLAYER ${playerNumber}`), host: false, ready: true };
+        player = { id: peerId, peerId, playerNumber, ...profileOf(data.profile, `PLAYER ${playerNumber}`), host: false, ready: true,connection:"connected",wins:0,color:COLORS[playerNumber-1] };
         session.players.push(player);
+        session.tokens.set(token,playerNumber);
       }
+      if(returning && session.started) {player.loaded=false;player.rejoinUntil=Date.now()+REJOIN_MS;player.connectionEpoch=(player.connectionEpoch||0)+1;session.remoteStates.delete(player.playerNumber);}
+      session.lastSeen.set(peerId,Date.now());refreshConnectionPause();
       sendRoom(session.connections.get(peerId), { type: "welcome", playerNumber: player.playerNumber, hostPeerId: session.peer.id, room: roomOf() });
+      if(session.latestWorld)sendRoom(session.connections.get(peerId),{type:"state",round:session.round,state:session.latestWorld});
       emitRoom();
       broadcastRoom();
-    } else if (data.type === "welcome" && !session.isHost) {
+    } else if (data.type === "welcome" && !session.isHost && peerId===session.hostPeerId) {
       session.playerNumber = Number(data.playerNumber) || 0;
       session.hostPeerId = String(data.hostPeerId || peerId);
       applySnapshot(data.room);
+      session.hostMissingSince=0;session.reconnectAttemptAt=0;session.closed="";
+      session.readyRound=null;
+      if(data.room.status==="playing" && !session.started)beginGame(data.room,true);
+      else if(session.started)session.restoreLocal=true;
       session.resolveReady?.(roomOf());
       session.resolveReady = null;
-    } else if (data.type === "snapshot" && !session.isHost) {
+    } else if (data.type === "snapshot" && !session.isHost && peerId===session.hostPeerId) {
       applySnapshot(data.room);
-    } else if (data.type === "start" && !session.isHost) {
+    } else if (data.type === "start" && !session.isHost && peerId===session.hostPeerId) {
+      if(session.started && data.room.round<=session.round)return true;
+      session.started=false;
       applySnapshot(data.room);
       beginGame(data.room);
     } else if (data.type === "rejected" && !session.isHost) {
-      session.rejectReady?.(new Error(data.reason === "ROOM_FULL" ? "That room is full." : "Unable to join that room."));
+      const reason=data.reason==="EXPIRED"?"Your reconnect window expired. Join again for the next round.":"That room is full or already playing.";
+      session.closed=reason;session.rejectReady?.(new Error(reason));
       session.rejectReady = null;
     }
     return true;
@@ -144,8 +211,9 @@
   function attach(connection) {
     if (!session || !connection) return;
     session.connections.set(connection.peer, connection);
-    connection.on("data", data => data?.__headnautRoom ? handleRoomMessage(connection.peer, data) : acceptGameMessage(connection.peer, data));
-    const closed = () => connectionClosed(connection.peer);
+    const owner=session;
+    connection.on("data", data => {if(session!==owner || session.connections.get(connection.peer)!==connection)return;data?.__headnautRoom ? handleRoomMessage(connection.peer, data) : acceptGameMessage(connection.peer, data);});
+    const closed = () => {if(session===owner && session.connections.get(connection.peer)===connection)connectionClosed(connection.peer);};
     connection.on("close", closed);
     connection.on("error", closed);
   }
@@ -154,13 +222,97 @@
     if (!session?.connections.has(peerId)) return;
     session.connections.delete(peerId);
     disconnected.push(peerId);
-    if (session.isHost && !session.started) {
-      session.players = session.players.filter(player => player.peerId !== peerId);
+    const player=session.players.find(p=>p.peerId===peerId);
+    if(player && !player.expired) {player.connection="reconnecting";player.rejoinUntil=Date.now()+REJOIN_MS;}
+    if(session.isHost) {refreshConnectionPause();emitRoom();broadcastRoom();}
+    else if(peerId===session.hostPeerId) {session.hostMissingSince ||= Date.now();emitRoom();}
+  }
+
+  function initializeSession() {
+    Object.assign(session,{phase:"lobby",round:0,feedback:[],feedbackSeq:0,lastSeen:new Map(),tokens:new Map(),remoteStates:new Map(),worldState:null,clockOffset:0});
+    const owner=session;
+    const pulse=()=>{if(session!==owner)return;heartbeat();owner.heartbeatTimer=setTimeout(pulse,500);};
+    owner.heartbeatTimer=setTimeout(pulse,500);
+    owner.peer.on("disconnected",()=>{if(session===owner && !owner.closed)try{owner.peer.reconnect?.();}catch{}});
+  }
+  function refreshConnectionPause() {
+    if(!session?.isHost)return;
+    session.connectionPaused=session.players.some(p=>!p.expired && (p.connection!=="connected" || (session.started && !p.loaded)));
+  }
+  function connectHost() {
+    if(!session || session.isHost || session.closed)return;
+    const connection=session.peer.connect(session.hostPeerId,{reliable:true});
+    session.reconnectAttemptAt=Date.now();attach(connection);
+    connection.on("open",()=>sendRoom(connection,{type:"hello",profile:session.profile,token:session.token}));
+  }
+  function heartbeat() {
+    if(!session || session.closed)return;
+    const now=Date.now();
+    for(const [id,connection] of session.connections)sendRoom(connection,{type:"ping",sentAt:now});
+    if(session.isHost) {
+      for(const p of session.players) {
+        if(p.host || p.expired)continue;
+        if(now-(session.lastSeen.get(p.peerId)||now)>3000 && p.connection==="connected") {p.connection="reconnecting";p.rejoinUntil=now+REJOIN_MS;}
+        if(p.rejoinUntil && now>=p.rejoinUntil) {p.expired=true;p.connection="left";p.rejoinUntil=0;}
+      }
+      if(!session.started) {
+        session.players=session.players.filter(p=>!p.expired);
+        for(const [token,number] of session.tokens)if(!session.players.some(p=>p.playerNumber===number))session.tokens.delete(token);
+      }
+      refreshConnectionPause();
+      if(session.phase==="countdown" && now>=session.startAt && !session.connectionPaused)session.phase="playing";
+      if(session.phase==="countdown" && session.connectionPaused) {session.phase="loading";session.startAt=0;}
+      maybeCountdown();emitRoom();broadcast({type:"health",round:session.round,phase:session.phase,startAt:session.startAt,connectionPaused:session.connectionPaused,players:session.players.map(({playerNumber,connection,rejoinUntil,expired,ping,loaded})=>({playerNumber,connection,rejoinUntil,expired,ping,loaded}))});
+    } else {
+      const connection=session.connections.get(session.hostPeerId);
+      if(!connection?.open || now-(session.lastSeen.get(session.hostPeerId)||now)>3000) {
+        session.hostMissingSince ||= now;
+        if(now-session.hostMissingSince>=REJOIN_MS)session.closed="Connection to the host was lost. Return home to join a new room.";
+        else if(!session.reconnectAttemptAt || now-session.reconnectAttemptAt>1500)connectHost();
+      }
       emitRoom();
-      broadcastRoom();
-    } else if (!session.isHost && peerId === session.hostPeerId && !session.started) {
-      session.onError?.(new Error("The host left the room."));
     }
+  }
+  function maybeCountdown() {
+    if(session?.isHost && session.phase==="loading" && !session.connectionPaused && session.players.filter(p=>!p.expired).every(p=>p.loaded)) {
+      session.phase="countdown";session.startAt=Date.now()+3000;broadcast({type:"round",room:roomOf()});
+    }
+  }
+  function arenaReady() {
+    if(!session?.started || session.readyRound===session.round)return;
+    session.readyRound=session.round;
+    if(session.isHost) {session.players[0].loaded=true;refreshConnectionPause();maybeCountdown();emitRoom();broadcastRoom();}
+    else sendRoom(session.connections.get(session.hostPeerId),{type:"arena-ready",round:session.round});
+  }
+  function getFlow() {
+    if(!session?.started)return null;
+    const remaining=Math.max(0,(session.startAt-(Date.now()+session.clockOffset))/1000);
+    const reconnecting=!!session.hostMissingSince || session.connectionPaused;
+    return {phase:session.phase,remaining,blocked:!!session.closed || reconnecting || session.phase==="loading" || (session.phase==="countdown" && remaining>0) || session.phase==="results",reconnecting,
+      rejoinSeconds:Math.max(0,Math.ceil(((session.hostMissingSince?session.hostMissingSince+REJOIN_MS:Math.min(...session.players.filter(p=>p.rejoinUntil).map(p=>p.rejoinUntil))) - Date.now() - (session.hostMissingSince?0:session.clockOffset))/1000))};
+  }
+  function reportAbsorption(event) {
+    if(!session?.isHost || !session.started)return;
+    const item={...event,id:++session.feedbackSeq,at:Date.now()};
+    session.feedback.push(item);session.feedback=session.feedback.slice(-32);
+    broadcast({type:"absorption",round:session.round,event:item});
+  }
+  function finishRound(winners,reason="absorption") {
+    if(!session?.isHost || !session.started || !["playing","countdown"].includes(session.phase) || (session.phase==="countdown" && Date.now()<session.startAt))return false;
+    session.phase="results";session.result={winners:winners.slice(),reason,round:session.round};
+    for(const p of session.players)if(winners.includes(p.playerNumber))p.wins=(p.wins||0)+1;
+    emitRoom();broadcast({type:"round",room:roomOf()});return true;
+  }
+  function returnToLobby() {
+    if(!session?.isHost)return false;
+    session.started=false;session.phase="lobby";session.result=null;session.latestWorld=null;session.worldState=null;session.remoteStates.clear();
+    session.players=session.players.filter(p=>!p.expired);configureGame(false);refreshConnectionPause();
+    for(const [token,number] of session.tokens)if(!session.players.some(p=>p.playerNumber===number))session.tokens.delete(token);
+    emitRoom();broadcast({type:"lobby",room:roomOf()});session.onLobby?.(roomOf());return true;
+  }
+  function leave() {
+    if(session?.isHost)broadcast({type:"closed"});else if(session)sendRoom(session.connections.get(session.hostPeerId),{type:"leave"});
+    destroySession();
   }
 
   function installBridge() {
@@ -208,6 +360,7 @@
     const oldSession = session;
     session = null;
     if (oldSession?.timer) clearTimeout(oldSession.timer);
+    if (oldSession?.heartbeatTimer) clearTimeout(oldSession.heartbeatTimer);
     for (const connection of oldSession?.connections.values() || []) try { connection.close(); } catch {}
     try { oldSession?.peer?.destroy(); } catch {}
     messages.clear();
@@ -244,13 +397,12 @@
     session = {
       runtimeScene, code, peer, isHost: true, hostPeerId: `${ROOM_PREFIX}${code}`, playerNumber: 1,
       level: null, mode: "head-to-head", started: false, connections: new Map(),
-      players: [{ id: `${ROOM_PREFIX}${code}`, peerId: `${ROOM_PREFIX}${code}`, playerNumber: 1, ...profileOf(profile, "YOU"), host: true, ready: true }],
+      players: [{ id: `${ROOM_PREFIX}${code}`, peerId: `${ROOM_PREFIX}${code}`, playerNumber: 1, ...profileOf(profile, "PLAYER 1"), host: true, ready: true,connection:"connected",wins:0,color:COLORS[0] }],
       ...callbacks,
     };
+    initializeSession();
     peer.on("connection", connection => {
-      if (session?.started || session?.players.length >= MAX_PLAYERS) {
-        connection.on("open", () => { sendRoom(connection, { type: "rejected", reason: "ROOM_FULL" }); connection.close(); });
-      } else attach(connection);
+      if(session?.peer===peer)attach(connection);
     });
     try {
       const id = await waitForOpen(peer, "Unable to create a room. Check your connection and try again.");
@@ -276,12 +428,16 @@
         level: null, mode: "head-to-head", started: false, connections: new Map(), players: [],
         resolveReady: resolve, rejectReady: reject, ...callbacks,
       };
+      initializeSession();
+      let token;
+      try {token=root.sessionStorage?.getItem(`headnaut-rejoin-${code}`);}catch{}
+      if(!/^[a-f0-9]{32}$/.test(token||""))token=Array.from(crypto.getRandomValues(new Uint8Array(16)),n=>n.toString(16).padStart(2,"0")).join("");
+      try {root.sessionStorage?.setItem(`headnaut-rejoin-${code}`,token);}catch{}
+      session.token=token;session.profile=profileOf(profile,"PLAYER 2");
     });
     try {
       await waitForOpen(peer, "Unable to connect to the room service.");
-      const connection = peer.connect(`${ROOM_PREFIX}${code}`, { reliable: true });
-      attach(connection);
-      connection.on("open", () => sendRoom(connection, { type: "hello", profile: profileOf(profile, "YOU") }));
+      connectHost();
       session.timer = setTimeout(() => session?.rejectReady?.(new Error("Room not found. Check the code and try again.")), TIMEOUT_MS);
       const room = await ready;
       clearTimeout(session.timer);
@@ -309,8 +465,8 @@
   }
   function exchangeState(state) {
     if (!session?.started) return null;
-    if (session.isHost) broadcast({ type: "state", state });
-    else sendRoom(session.connections.get(session.hostPeerId), { type: "state", state });
+    if (session.isHost) {session.latestWorld=state;broadcast({ type: "state", round:session.round,state });}
+    else sendRoom(session.connections.get(session.hostPeerId), { type: "state", round:session.round,state });
   }
   function getRemoteStates() { return session?.remoteStates || new Map(); }
   function getWorldState() { return session?.worldState || null; }
@@ -333,9 +489,11 @@
     api._isReadyToSendOrReceiveGameUpdateMessages = active;
   }
 
-  function beginGame(room) {
+  function beginGame(room, rejoin = false) {
     if (!session || session.started) return;
     session.started = true;
+    session.round=room.round;session.phase=room.phase;session.startAt=room.startAt||0;
+    session.readyRound=null;session.restoreLocal=!!rejoin;session.feedback=[];
     session.remoteStates = new Map();
     session.worldState = null;
     // Keep GDevelop's multiplayer identity and update loop untouched while each
@@ -363,17 +521,25 @@
     if (!session?.isHost) throw new Error("Only the host can start the game.");
     if (!session.level) throw new Error("Choose a level before starting.");
     if (session.players.length < 2) throw new Error("Wait for at least one other player to join.");
+    if(session.started && session.phase!=="results")throw new Error("A round is already in progress.");
+    if(session.players.some(p=>p.connection!=="connected" || p.expired))throw new Error("Wait for players to reconnect, or return to the lobby.");
+    session.started=false;session.phase="loading";session.round+=1;session.startAt=0;session.result=null;session.latestWorld=null;
+    for(const p of session.players)p.loaded=false;
     const room = roomOf();
     broadcast({ type: "start", room });
     beginGame(room);
     return room;
   }
 
-  function cancel() { if (!session?.started) destroySession(); }
+  function cancel() { if (!session?.started) leave(); }
   const getCapabilities = () => Object.freeze({ privateRooms: typeof root.Peer === "function", hostedLobbies: false, directLobbyJoin: true, quickJoin: false, playerAuthentication: false });
 
   root.HeadSpaceMultiplayerService = Object.freeze({
     version: VERSION, getCapabilities, createRoom, joinRoom, updateSettings, startRoom,
     cancel, getRoom: roomOf, normalizeCode, updateActivity, exchangeState, getRemoteStates, getWorldState,
+    arenaReady,getFlow,finishRound,returnToLobby,leave,reportAbsorption,
+    getFeedback:()=>session?.feedback||[],
+    consumeRestore:()=>{if(!session?.restoreLocal)return false;session.restoreLocal=false;return true;},
+    playerColor:number=>COLORS[(Number(number)||1)-1]||COLORS[0],
   });
 })(globalThis);
