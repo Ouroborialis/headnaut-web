@@ -15141,6 +15141,29 @@
   function updateRegularEnemyRespawns(runtimeScene, level, state, elapsedSeconds) {
     if (Number(level) === 2 && isMultiplayerGame(runtimeScene, level)) return;
     if (isClearAllEnemiesLevel(level)) {
+      // Level 1 replenishes one enemy at a time, including a recovery target
+      // when all remaining enemies are too large. Never refill an empty arena:
+      // removing the last enemy must still win the level.
+      if (state && !isMultiplayerGame(runtimeScene, level)) {
+        const player = runtimeScene.getObjects("Player")[0];
+        const enemies = getActiveRegularEnemies(runtimeScene);
+        const needsRecovery = player && enemies.length > 0 &&
+          (enemies.length < REGULAR_ENEMY_LOW_COUNT_THRESHOLD ||
+            enemies.every(enemy => enemy.getWidth() >= player.getWidth()));
+        if (!Number.isFinite(state.timerStartedAtMs) || !Number.isFinite(elapsedSeconds) ||
+            !needsRecovery || getSceneBoolean(runtimeScene, "LevelWon") ||
+            getSceneBoolean(runtimeScene, "LevelLost") || getSceneBoolean(runtimeScene, "Paused")) {
+          state.levelOneRespawnSinceSeconds = null;
+        } else {
+          if (!Number.isFinite(state.levelOneRespawnSinceSeconds)) {
+            state.levelOneRespawnSinceSeconds = elapsedSeconds;
+          }
+          if (elapsedSeconds - state.levelOneRespawnSinceSeconds >= REGULAR_ENEMY_LOW_COUNT_DELAY_SECONDS) {
+            spawnRegularEnemyBatch(runtimeScene, level, 1);
+            state.levelOneRespawnSinceSeconds = null;
+          }
+        }
+      }
       if (state) {
         state.zeroRegularEnemiesSinceSeconds = null;
         state.lowRegularEnemiesSinceSeconds = null;
