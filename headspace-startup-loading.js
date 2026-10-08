@@ -23,6 +23,9 @@
       else if (value && typeof value === 'object') Object.values(value).forEach(collect);
     };
     for (const object of [...data.objects, ...scene.objects]) {
+      // The runtime hides this legacy backdrop before rendering the home
+      // screen; home-startup.webp supplies the visible background instead.
+      if (object.name === 'Background_UNTILED_1') continue;
       if (data.objects.includes(object) || objectNames.has(object.name) || /Preview|Button|Label/.test(object.name)) collect(object);
     }
     const fullList = this._sceneResources.get(sceneName);
