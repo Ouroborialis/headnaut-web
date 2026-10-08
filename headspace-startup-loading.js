@@ -25,9 +25,6 @@
     for (const object of [...data.objects, ...scene.objects]) {
       if (data.objects.includes(object) || objectNames.has(object.name) || /Preview|Button|Label/.test(object.name)) collect(object);
     }
-    for (const resource of this._resources.values()) {
-      if (resource.kind === 'font') resourceNames.add(resource.name);
-    }
     const fullList = this._sceneResources.get(sceneName);
     this._sceneResources.set(sceneName, [...resourceNames]);
     try {
@@ -48,6 +45,20 @@
       this._sceneNamesToLoad.add(deferredScene);
       this._sceneNamesToMakeReady.add(deferredScene);
       this._headnautDeferredScene = null;
+      const imagePack = game.getGameData().headnautDeferredImagePack;
+      if (imagePack) {
+        await new Promise(resolve => {
+          const script = document.createElement('script');
+          script.src = imagePack;
+          script.onload = script.onerror = resolve;
+          document.head.appendChild(script);
+        });
+        for (const [name, url] of Object.entries(window.headnautDeferredImageUrls || {})) {
+          const resource = this._resources.get(name);
+          if (resource) resource.file = url;
+        }
+        delete window.headnautDeferredImageUrls;
+      }
     }
     return loadBackground.call(this);
   };
