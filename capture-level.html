@@ -61,7 +61,7 @@
 
       function selectLevel(win) {
         const game = win.headSpaceGame;
-        if (!game) return false;
+        if (!game || !game.wasFirstSceneLoaded()) return false;
 
         const variables = game.getVariables();
         variables.get("CurrentLevel").setNumber(level);
@@ -183,7 +183,10 @@
         if (!win || !doc) return;
 
         hideOverlayUi(doc);
-        if (!selectLevel(win)) return;
+        if (!selectLevel(win)) {
+          win.setTimeout(syncFrame, 50);
+          return;
+        }
 
         let tries = 0;
         const interval = win.setInterval(() => {
