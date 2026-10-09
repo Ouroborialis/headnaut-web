@@ -96,14 +96,13 @@
     const state = states.get(this);
     if (!state) return loadBackground.call(this);
     while (!this.getRuntimeGame().wasFirstSceneLoaded()) await new Promise(resolve => setTimeout(resolve, 16));
-    startOptionalPack(this, state);
+    // Keep optional downloads off the critical menu-to-game path.
   };
   prototype.loadAndProcessSceneResources = async function (sceneName, progress) {
     const state = states.get(this);
     if (!state) return loadScene.call(this, sceneName, progress);
     const key = keyFor(this.getRuntimeGame(), sceneName);
     if (state.ready.has(key)) return;
-    startOptionalPack(this, state);
     this.currentLoadingSceneName = sceneName;
     try {
       await ensureResources(this, state, requiredResources(this, sceneName), async (done, total) => {
@@ -113,6 +112,7 @@
       state.ready.add(key);
       this._setSceneAssetsLoaded(sceneName);
       this._setSceneAssetsReady(sceneName);
+      if (this.getRuntimeGame().getVariables().get('CurrentLevel').getAsNumber() >= 1) startOptionalPack(this, state);
     } finally { this.currentLoadingSceneName = ''; }
   };
   prototype.loadSceneResources = function (sceneName, progress) {
