@@ -1,6 +1,7 @@
 // Destination loads never wait for the optional pack or another level's queue.
 (function () {
   const states = new WeakMap();
+  const packedArtwork = new Map();
   const prototype = gdjs.ResourceLoader.prototype;
   const loadFirst = prototype.loadGlobalAndFirstSceneResources;
   const loadBackground = prototype.loadAllSceneInBackground;
@@ -12,6 +13,7 @@
     if (typeof source === 'string' && !source.startsWith('data:')) {
       const query = source.indexOf('?');
       const base = query < 0 ? source : source.slice(0, query);
+      if (window.headSpaceGame?.getVariables().get('CurrentLevel').getAsNumber() === 0.5 && packedArtwork.has(base)) return packedArtwork.get(base);
       const replacement = gdjs.projectData?.headnautTextureUrlMap?.[base];
       if (replacement) source = replacement + (query < 0 ? '' : source.slice(query));
     }
@@ -33,26 +35,31 @@
     };
     for (const object of [...data.objects, ...scene.objects]) {
       if (level === 0 && object.name === 'Background_UNTILED_1') continue;
-      // Include complete authored companion/effect animations for gameplay,
-      // but do not fetch the scenery belonging to every other level.
-      const actor = level >= 1 && !/^(Background|BackRandomTest|SPbackground|Panet_|Planet_)/.test(object.name);
+      // Include dynamically created gameplay actors and companions, without
+      // fetching the export's unused animation library or other levels' scenery.
+      const actor = level >= 1 && /^(Player|Enemy|SmartEnemy|EmittedMaterial|Asteroid|Walls|Message|Light|BACKstars|InternalFloaties|PropulsionJet)/.test(object.name);
       if (data.objects.includes(object) || names.has(object.name) || actor || /Preview|Button|Label/.test(object.name)) collect(object);
     }
     return [...resources].filter(name => loader._resources.get(name)?.kind !== 'audio');
   }
-  async function loadDestinationPack(loader, state) {
+  async function loadDestinationPack(loader, state, level = loader.getRuntimeGame().getVariables().get('CurrentLevel').getAsNumber()) {
     const game = loader.getRuntimeGame();
-    const file = game.getGameData().headnautResourcePacks?.[game.getVariables().get('CurrentLevel').getAsNumber()];
+    const file = game.getGameData().headnautResourcePacks?.[level];
     if (!file) return;
     if (!state.packs.has(file)) state.packs.set(file, (async () => {
       const response = await fetch(loader.getFullUrl(file), {signal: AbortSignal.timeout(15000)});
       if (!response.ok) throw new Error(`Image pack HTTP ${response.status}`);
       const images = await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).json();
-      for (const [name, url] of Object.entries(images)) {
+      for (const [name, url] of Object.entries(images.resources)) {
         const resource = loader._resources.get(name);
         // Preserve cache keys for images already loaded or loading.
         if (resource && !state.loading.has(name) && !loader._imageManager._loadedTextures.get(resource)) resource.file = url;
       }
+      await Promise.all(Object.entries(images.artwork).map(async ([name, image]) => {
+        const texture = textureFrom.call(PIXI.Texture, image.url);
+        if (!texture.baseTexture.valid) await texture.baseTexture.resource.load();
+        packedArtwork.set(name, new PIXI.Texture(texture.baseTexture, texture.frame.clone(), new PIXI.Rectangle(0, 0, image.width, image.height)));
+      }));
     })());
     try { await state.packs.get(file); }
     catch (error) { state.packs.delete(file); console.warn('Using individual images after pack failure', error); }
@@ -78,8 +85,7 @@
             const size = loader.getRuntimeGame().getGameData().headnautHiddenImages?.[name];
             if (size) {
               // Preserve the native dimensions without fetching art hidden by the runtime.
-              const texture = new PIXI.Texture(PIXI.Texture.EMPTY.baseTexture,
-                new PIXI.Rectangle(0, 0, 1, 1), new PIXI.Rectangle(0, 0, size[0], size[1]), new PIXI.Rectangle(0, 0, 1, 1));
+              const texture = PIXI.RenderTexture.create({width:size[0],height:size[1]});
               loader._imageManager._loadedTextures.set(resource, texture);
             } else { await loader._loadResource(resource); await loader._processResource(resource); }
           })();
@@ -112,7 +118,8 @@
     const state = states.get(this);
     if (!state) return loadBackground.call(this);
     while (!this.getRuntimeGame().wasFirstSceneLoaded()) await new Promise(resolve => setTimeout(resolve, 16));
-    // Keep optional downloads off the critical menu-to-game path.
+    // Warm the small, immediately next destination; never download all levels.
+    void loadDestinationPack(this, state, 0.5);
   };
   prototype.loadAndProcessSceneResources = async function (sceneName, progress) {
     const state = states.get(this);
@@ -122,7 +129,10 @@
     this.currentLoadingSceneName = sceneName;
     this.currentSceneLoadingProgress = 0;
     try {
-      await Promise.all([loadDestinationPack(this, state), loadDestinationArtwork(this)]);
+      if (this.getRuntimeGame().getVariables().get('CurrentLevel').getAsNumber() === 0.5) {
+        await loadDestinationPack(this, state);
+        await loadDestinationArtwork(this);
+      } else await Promise.all([loadDestinationPack(this, state), loadDestinationArtwork(this)]);
       await ensureResources(this, state, requiredResources(this, sceneName), async (done, total) => {
         this.currentSceneLoadingProgress = total ? done / total : 1;
         await progress?.(done, total);
@@ -130,6 +140,9 @@
       state.ready.add(key);
       this._setSceneAssetsLoaded(sceneName);
       this._setSceneAssetsReady(sceneName);
+      if (this.getRuntimeGame().getVariables().get('CurrentLevel').getAsNumber() === 0.5) {
+        setTimeout(() => loadDestinationPack(this, state, 1), 200);
+      }
     } finally { this.currentLoadingSceneName = ''; }
   };
   prototype.loadSceneResources = function (sceneName, progress) {
