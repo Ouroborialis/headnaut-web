@@ -47,9 +47,10 @@
     const file = game.getGameData().headnautResourcePacks?.[level];
     if (!file) return;
     if (!state.packs.has(file)) state.packs.set(file, (async () => {
-      const response = await fetch(loader.getFullUrl(file), {signal: AbortSignal.timeout(15000)});
+      const response = await fetch(loader.getFullUrl(file), {signal: AbortSignal.timeout(60000)});
       if (!response.ok) throw new Error(`Image pack HTTP ${response.status}`);
-      const images = await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).json();
+      const bytes = await response.arrayBuffer();
+      const images = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'))).json();
       for (const [name, url] of Object.entries(images.resources)) {
         const resource = loader._resources.get(name);
         // Preserve cache keys for images already loaded or loading.
