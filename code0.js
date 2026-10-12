@@ -1441,14 +1441,14 @@ gdjs.GameCode.GDPlayerHelmetObjects9= [];
 
 gdjs.GameCode.userFunc0x213f658 = function GDJSInlineCode(runtimeScene) {
 "use strict";
-runtimeScene.setBackgroundColor(100,100,240);
+runtimeScene.setBackgroundColor(0,0,0);
 // Force full-screen on startup
 gdjs.evtTools.window.setFullScreen(runtimeScene, true, true);
 
 };
 gdjs.GameCode.userFunc0x213f518 = function GDJSInlineCode(runtimeScene) {
 "use strict";
-runtimeScene.setBackgroundColor(100,100,240);
+runtimeScene.setBackgroundColor(0,0,0);
 // This runs once at scene start:
 if (runtimeScene.getGame().getVariables().get("musicInitialized").getAsNumber() === 0) {
   // 1) Your playlist:
