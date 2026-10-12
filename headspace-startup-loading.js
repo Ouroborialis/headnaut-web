@@ -2,6 +2,7 @@
 (function () {
   const states = new WeakMap();
   const packedArtwork = new Map();
+  const artworkPlaceholders = new Map();
   const prototype = gdjs.ResourceLoader.prototype;
   const loadFirst = prototype.loadGlobalAndFirstSceneResources;
   const loadBackground = prototype.loadAllSceneInBackground;
@@ -13,7 +14,16 @@
     if (typeof source === 'string' && !source.startsWith('data:')) {
       const query = source.indexOf('?');
       const base = query < 0 ? source : source.slice(0, query);
-      if (window.headSpaceGame?.getVariables().get('CurrentLevel').getAsNumber() === 0.5 && packedArtwork.has(base)) return packedArtwork.get(base);
+      if (window.headSpaceGame?.getVariables().get('CurrentLevel').getAsNumber() === 0.5) {
+        if (packedArtwork.has(base)) return packedArtwork.get(base);
+        const size = gdjs.projectData.headnautMapArtworkDimensions?.[base];
+        if (size) {
+          // The departing home scene can render one frame after Play changes
+          // the level variable. Do not start full-size art downloads in that frame.
+          if (!artworkPlaceholders.has(base)) artworkPlaceholders.set(base, PIXI.RenderTexture.create({width:size[0],height:size[1]}));
+          return artworkPlaceholders.get(base);
+        }
+      }
       const replacement = gdjs.projectData?.headnautTextureUrlMap?.[base];
       if (replacement) source = replacement + (query < 0 ? '' : source.slice(query));
     }

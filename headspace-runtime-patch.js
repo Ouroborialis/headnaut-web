@@ -1205,10 +1205,26 @@
     const originalPlaySoundOnChannel = soundTools.playSoundOnChannel;
     if (typeof originalPlaySoundOnChannel === "function") {
       soundTools.playSoundOnChannel = function (...args) {
+        const trackKey = normalizeAudioAssetName(args[1]).replace(/\.(wav|mp3)$/i, "");
+        if (Number(args[2]) === MUSIC_CHANNEL && BACKGROUND_MUSIC_TRACKS.some(
+          track => normalizeAudioAssetName(track).replace(/\.(wav|mp3)$/i, "") === trackKey
+        )) {
+          const resources = args[0]?.getGame?.().getGameData?.().resources?.resources || [];
+          const resource = resources.find(resource => resource.kind === "audio" &&
+            normalizeAudioAssetName(resource.name).replace(/\.(wav|mp3)$/i, "") === trackKey);
+          if (resource) args[1] = resource.name;
+          return soundTools.playMusicOnChannel.apply(this, args);
+        }
         args[4] = getBalancedSfxVolume(args[1], args[4]);
         return originalPlaySoundOnChannel.apply(this, args);
       };
     }
+    // Authored events still query the sound channel for their background track.
+    const originalIsSoundPlaying = soundTools.isSoundOnChannelPlaying;
+    soundTools.isSoundOnChannelPlaying = function (scene, channel) {
+      return (Number(channel) === MUSIC_CHANNEL && soundTools.isMusicOnChannelPlaying(scene, channel)) ||
+        originalIsSoundPlaying.call(this, scene, channel);
+    };
 
     soundTools.__headSpaceSfxVolumeCapsInstalled = true;
   }
@@ -2630,6 +2646,8 @@
     const url = original.baseTexture?.resource?.url;
     if (url) sprite.__headSpaceArtworkUrl ||= url;
     if (original.valid) return;
+    // A slow image is still loading. Retry only after it actually fails.
+    if (original.baseTexture?.resource?.source?.complete === false) return;
     if (!url || !/^https?:/i.test(new URL(url, location.href).href)) return;
     let recovery = textureRecoveryState.get(original);
     const now = performance.now();
