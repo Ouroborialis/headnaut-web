@@ -252,8 +252,16 @@
       for (const player of players) {
         if (!player.cursor || player.playerNumber === room.localPlayerNumber) continue;
         const marker = document.createElement("span");
-        marker.textContent = `? ${player.host ? "HOST" : `P${player.playerNumber}`}`;
-        Object.assign(marker.style, {position:"absolute",left:`${player.cursor.x*100}%`,top:`${player.cursor.y*100}%`,color:presenceColor(player),font:"bold 13px Arial",textShadow:"0 1px 3px black"});
+        marker.className = "mp-presence-marker";
+        marker.dataset.player = String(player.playerNumber);
+        const orb = document.createElement("span");
+        orb.className = "mp-presence-orb";
+        orb.setAttribute("aria-hidden", "true");
+        Object.assign(orb.style, {display:"inline-block",width:"12px",height:"12px",flexShrink:"0",borderRadius:"50%",backgroundColor:presenceColor(player),backgroundImage:"radial-gradient(circle at 30% 25%,rgba(255,255,255,.9),transparent 60%)",boxShadow:`0 0 8px ${presenceColor(player)}`});
+        const label = document.createElement("span");
+        label.textContent = player.host ? "Host" : `P${player.playerNumber}`;
+        marker.append(orb, label);
+        Object.assign(marker.style, {position:"absolute",display:"inline-flex",alignItems:"center",gap:"6px",whiteSpace:"nowrap",left:`${player.cursor.x*100}%`,top:`${player.cursor.y*100}%`,color:presenceColor(player),font:"bold 13px Arial",textShadow:"0 1px 3px black"});
         cursors.append(marker);
       }
     };
@@ -317,6 +325,7 @@
       }
       renderPlayers();
       renderPresence();
+      startButton.textContent = inRoom && !isHost ? "READY" : "START";
       startButton.disabled = !isHost || !selectedLevel || (room?.players?.length || 0) < 2 || room.players.some(p=>p.connection!=="connected" || p.expired);
       if (inRoom) setStatus(isHost
         ? ((room.players?.length || 0) < 2 ? `Room ${room.code} is ready. Waiting for another player.` : selectedLevel ? `Everyone is ready. Start Level ${selectedLevel} when you are ready.` : "Player joined. Choose a level and mode.")
