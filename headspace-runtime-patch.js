@@ -20714,7 +20714,8 @@
         typeof absorber.getWidth === "function" ? absorber.getWidth() : 0,
         typeof absorber.getHeight === "function" ? absorber.getHeight() : 0
       );
-      if (absorberSize <= objectSize + Math.max(2, objectSize * 0.02)) continue;
+      const humanContact=object.getName?.()==="Player" && absorber.getName?.()==="Player" && globalThis.HeadSpaceMultiplayerService?.getRoom?.()?.mode==="head-to-head";
+      if (absorberSize <= objectSize + (humanContact ? 1e-6 : Math.max(2, objectSize * 0.02))) continue;
 
       const absorberRadius = getApproxObjectRadius(absorber, 1);
       const ax = typeof absorber.getCenterXInScene === "function" ? absorber.getCenterXInScene() : 0;
@@ -24732,26 +24733,32 @@
       setObjectCenterExact(object,packet.x,packet.y);
       object.setAngle(packet.angle);
       object.__headSpaceNetworkPortalTransit=packet.portal===true;
+      object.__headSpaceContactRevision=Number(packet.contactRevision)||0;
       const physics = object.getBehavior?.("Physics2");
       physics?.setLinearVelocityX?.(Number(packet.vx)||0);
       physics?.setLinearVelocityY?.(Number(packet.vy)||0);
     };
     const capture = object => {
       const physics=object.getBehavior?.("Physics2");
-      return {id:object.__headSpaceRoomPlayerNumber || object.__headSpaceArenaId,x:object.getCenterXInScene(),y:object.getCenterYInScene(),size:object.getWidth(),angle:object.getAngle(),vx:physics?.getLinearVelocityX?.()||0,vy:physics?.getLinearVelocityY?.()||0,acceptedMass:state.acceptedMass.get(object.__headSpaceRoomPlayerNumber)||0,portal:!!(object.__headSpaceBlackHoleTransit || object.__headSpaceLevelNinePortalTransit)};
+      return {id:object.__headSpaceRoomPlayerNumber || object.__headSpaceArenaId,x:object.getCenterXInScene(),y:object.getCenterYInScene(),size:object.getWidth(),angle:object.getAngle(),vx:physics?.getLinearVelocityX?.()||0,vy:physics?.getLinearVelocityY?.()||0,acceptedMass:state.acceptedMass.get(object.__headSpaceRoomPlayerNumber)||0,contactRevision:object.__headSpaceContactRevision||0,portal:!!(object.__headSpaceBlackHoleTransit || object.__headSpaceLevelNinePortalTransit)};
     };
     const players=runtimeScene.getObjects("Player");
     if (room.isHost) {
-      for (const [number,packet] of service.getRemoteStates()) {
+      if (beforeEvents) for (const [number,packet] of service.getRemoteStates()) {
         const epoch=room.players.find(p=>p.playerNumber===number)?.connectionEpoch||0;
         const epochs=state.receivedEpochs || (state.receivedEpochs=new Map());
         if(epochs.get(number)!==epoch) {
           epochs.set(number,epoch);state.received.delete(number);state.previousPositions?.delete(number);
           for(const key of state.observedContactSequences?.keys?.()||[])if(key.startsWith(`${number}:`)||key.endsWith(`:${number}`))state.observedContactSequences.delete(key);
         }
-        if (!packet || packet.seq < (state.received.get(number)||0)) continue;
+        if (!packet || packet.seq <= (state.received.get(number)||0)) continue;
         const player=players.find(p=>p.__headSpaceRoomPlayerNumber===number);
-        apply(player, packet.player, true);
+        // A local contact correction must be acknowledged before an older
+        // client position can overwrite it. Apply each new motion packet once,
+        // before native physics, so post-events contact sees the physics result.
+        if ((Number(packet.player?.contactRevision)||0) === (player?.__headSpaceContactRevision||0)) {
+          apply(player, packet.player, true);
+        }
         const mass=Number(packet.ejectedMass);
         const accepted=state.acceptedMass.get(number)||0;
         if(player && Number.isFinite(mass) && mass>=accepted) {
@@ -24775,9 +24782,15 @@
           const number=player.__headSpaceRoomPlayerNumber;
           const packet=world.players.find(p=>p.id===number);
           if (!packet) { deleteRuntimeObjectTree(runtimeScene,player); continue; }
-          if (number !== room.localPlayerNumber || state.restoreLocal) {
+          if (number !== room.localPlayerNumber || state.restoreLocal || (Number(packet.contactRevision)||0) > (player.__headSpaceContactRevision||0)) {
+            const restoringLocal=state.restoreLocal;
             apply(player,packet);
-            if(number===room.localPlayerNumber){state.restoreLocal=false;state.ejectedMass=packet.acceptedMass||0;state.localSizeBeforeEvents=player.getWidth();ensureSceneState(runtimeScene,getCurrentLevel(runtimeScene)).firstOrbFired=true;}
+            if(number===room.localPlayerNumber){
+              if(restoringLocal)state.ejectedMass=packet.acceptedMass||0;
+              else setObjectSizeAndShape(player,Math.sqrt(Math.max(1,packet.size**2-Math.max(0,state.ejectedMass-(packet.acceptedMass||0)))));
+              setObjectCenterExact(player,packet.x,packet.y);
+              state.restoreLocal=false;state.localSizeBeforeEvents=player.getWidth();ensureSceneState(runtimeScene,getCurrentLevel(runtimeScene)).firstOrbFired=true;
+            }
           }
           else if (beforeEvents && Number.isFinite(packet.size) && packet.size>0) {
             const x=player.getCenterXInScene(),y=player.getCenterYInScene();
@@ -24807,7 +24820,7 @@
       const observed = state.observedContactSequences || (state.observedContactSequences=new Map());
       for (let i=0;i<players.length;i++) for (let j=i+1;j<players.length;j++) {
         const a=players[i],b=players[j];
-        if(a.isDeleted?.() || b.isDeleted?.() || Math.abs(a.getWidth()-b.getWidth())<1e-6) continue;
+        if(a.isDeleted?.() || b.isDeleted?.()) continue;
         const big=a.getWidth()>b.getWidth()?a:b, small=big===a?b:a;
         if(inPortal(big) || inPortal(small)) continue;
         const dx=big.getCenterXInScene()-small.getCenterXInScene(), dy=big.getCenterYInScene()-small.getCenterYInScene();
@@ -24847,6 +24860,27 @@
             }
           }
         }
+        // Equal sizes cannot absorb, but they must make solid contact instead
+        // of passing through each other. Swept contact also catches a crossing
+        // between network updates. Send the correction to the owning client.
+        const contactRadius=(a.getWidth()+b.getWidth())/2;
+        if(Math.abs(a.getWidth()-b.getWidth())<1e-6) {
+          const currentDistance=Math.hypot(dx,dy);
+          if(distance>=contactRadius-0.01) continue;
+          const oldA=previous.get(a.__headSpaceRoomPlayerNumber),oldB=previous.get(b.__headSpaceRoomPlayerNumber);
+          let nx=a.getCenterXInScene()-b.getCenterXInScene(),ny=a.getCenterYInScene()-b.getCenterYInScene();
+          if(oldA && oldB && !oldA.portal && !oldB.portal) {nx=oldA.x-oldB.x;ny=oldA.y-oldB.y;}
+          const length=Math.hypot(nx,ny)||1;nx=length===1 && nx===0 && ny===0?1:nx/length;ny/=length;
+          const cx=(a.getCenterXInScene()+b.getCenterXInScene())/2,cy=(a.getCenterYInScene()+b.getCenterYInScene())/2;
+          setObjectCenterExact(a,cx+nx*contactRadius/2,cy+ny*contactRadius/2);
+          setObjectCenterExact(b,cx-nx*contactRadius/2,cy-ny*contactRadius/2);
+          const pa=a.getBehavior?.("Physics2"),pb=b.getBehavior?.("Physics2");
+          const closing=((pa?.getLinearVelocityX?.()||0)-(pb?.getLinearVelocityX?.()||0))*nx+((pa?.getLinearVelocityY?.()||0)-(pb?.getLinearVelocityY?.()||0))*ny;
+          if(closing<0){const impulse=-closing*0.8;pa?.setLinearVelocityX?.((pa.getLinearVelocityX?.()||0)+nx*impulse);pa?.setLinearVelocityY?.((pa.getLinearVelocityY?.()||0)+ny*impulse);pb?.setLinearVelocityX?.((pb.getLinearVelocityX?.()||0)-nx*impulse);pb?.setLinearVelocityY?.((pb.getLinearVelocityY?.()||0)-ny*impulse);}
+          a.__headSpaceContactRevision=(a.__headSpaceContactRevision||0)+1;
+          b.__headSpaceContactRevision=(b.__headSpaceContactRevision||0)+1;
+          continue;
+        }
         // Physics can leave two touching circles a fraction of a pixel apart.
         // Treat that narrow contact band as a bite instead of requiring visible
         // penetration. Size advantage, host authority and portal immunity still apply.
@@ -24855,17 +24889,24 @@
           ? Math.min(2*Math.max(0,distance-big.getWidth()/2),Math.max(0,small.getWidth()-0.5))
           : 2*Math.max(0,distance-big.getWidth()/2);
         if(remaining>=small.getWidth()) continue;
-        const matter=small.getWidth()**2-remaining**2;
-        notifyRoomAbsorption(runtimeScene,big,small,remaining<1);
-        const center={x:big.getCenterXInScene(),y:big.getCenterYInScene()};
-        setObjectSizeAndShape(big,Math.sqrt(big.getWidth()**2+matter));
-        setObjectCenterExact(big,center.x,center.y);
-        if(remaining<1) {
+        // Use the shipped Absorbus extension for the same shrink/growth and
+        // momentum transfer as orange enemies. Supply the validated swept/lag
+        // compensated distance without moving either actor or changing fixtures.
+        const nativeAbsorb=gdjs.evtsExt__Absorbus__Absorb.func;
+        const table=getHashtableApi();
+        const bigCenter={x:big.getCenterXInScene(),y:big.getCenterYInScene()};
+        const smallCenter={x:small.getCenterXInScene(),y:small.getCenterYInScene()};
+        const hadOwn=Object.prototype.hasOwnProperty.call(big,"getDistanceToObject"),originalDistance=big.getDistanceToObject;
+        big.getDistanceToObject=function(target){return target===small?(big.getWidth()+remaining)/2:originalDistance.call(this,target);};
+        try {
+          nativeAbsorb(runtimeScene,table.newFrom({Player:[big]}),"Physics2",table.newFrom({Player:[small]}),"Physics2",undefined);
+        } finally {if(hadOwn)big.getDistanceToObject=originalDistance;else delete big.getDistanceToObject;}
+        setObjectSizeAndShape(big,big.getWidth());setObjectCenterExact(big,bigCenter.x,bigCenter.y);
+        if(small.getWidth()<1) {
           recordMultiplayerAbsorption(runtimeScene,[big],[small]);
           deleteRuntimeObjectTree(runtimeScene,small);
         } else {
-          const x=small.getCenterXInScene(),y=small.getCenterYInScene();
-          setObjectSizeAndShape(small,remaining); setObjectCenterExact(small,x,y);
+          setObjectSizeAndShape(small,small.getWidth());setObjectCenterExact(small,smallCenter.x,smallCenter.y);
         }
       }
     }
@@ -24999,6 +25040,12 @@
     // before boosts or moving-body collision resolution allowed those later
     // systems to put hostile actors back on top of one another.
     syncPrivateRoomGameplay(runtimeScene);
+    if (globalThis.HeadSpaceMultiplayerService?.getRoom?.()?.status === "playing") {
+      const absorptionState=sceneState.get(runtimeScene);
+      if(absorptionState)syncAbsorbVisuals(runtimeScene,absorptionState,getElapsedSecondsForState(absorptionState),!getSceneBoolean(runtimeScene,"Paused"));
+      if(sharedMultiplayerSystem)syncMultiplayerLevelFourOrangeEnemyVisuals(runtimeScene,sharedMultiplayerSystem);
+      if(multiplayerLevelFourSystem)syncMultiplayerLevelFourOrangeEnemyVisuals(runtimeScene,multiplayerLevelFourSystem);
+    }
     resolveMultiplayerEnemyOverlaps(runtimeScene);
     enforceGameplayHelmetOcclusion(runtimeScene);
     // Size and center the GDevelop companions before installing the custom
