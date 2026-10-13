@@ -8707,11 +8707,10 @@
 
     const x = enemy.getCenterXInScene();
     const y = enemy.getCenterYInScene();
-    const size = Math.max(1, enemy.getWidth()) * 1.1;
-    const pulse = 1 + Math.sin(elapsedSeconds * 2.35 + record.phase) * 0.025;
+    const size = Math.max(1, enemy.getWidth());
     visual.sprite.position.set(x, y);
-    visual.sprite.width = size * pulse;
-    visual.sprite.height = size * pulse;
+    visual.sprite.width = size;
+    visual.sprite.height = Math.max(1, enemy.getHeight());
     visual.sprite.rotation = Math.sin(elapsedSeconds * 0.72 + record.phase) * 0.035;
     visual.sprite.alpha = 0.94 + Math.sin(elapsedSeconds * 1.7 + record.phase) * 0.045;
     const pulseColor = getLevelTwelveCosmicAlienPulseColor(elapsedSeconds, record.phase);
@@ -20914,25 +20913,12 @@
         continue;
       }
 
-      const baseScale = clamp(host.getWidth() / 124, 0.08, 12);
-      let scaleX = baseScale;
-      let scaleY = baseScale;
-      let offsetX = 0;
-      let offsetY = 0;
-
-      if (wiggle && allowWiggle) {
-        const now = performance.now() / 1000;
-        const phase = now * 3.4 + index * 0.67 + (host.getX() + host.getY()) * 0.004;
-        scaleX = baseScale * (1 + Math.sin(phase) * 0.008);
-        scaleY = baseScale * (1 + Math.cos(phase * 1.23) * 0.014);
-        offsetX = Math.sin(phase * 1.1) * 0.8;
-        offsetY = Math.cos(phase * 0.9) * 1.3;
-      }
-
-      syncImageCompanionRenderState(host, image);
-      image.setScaleX(scaleX);
-      image.setScaleY(scaleY);
-      image.setCenterPositionInScene(host.getCenterXInScene() + offsetX, host.getCenterYInScene() + offsetY);
+      // Enemy artwork has different authored frame sizes. Use the gameplay
+      // body dimensions directly; texture scale and wiggle must not change
+      // apparent size or the comparison used for absorption and winning.
+      image.setSize(host.getWidth(), host.getHeight());
+      image.setCenterPositionInScene(host.getCenterXInScene(), host.getCenterYInScene());
+      image.setAngle?.(host.getAngle?.() || 0);
       syncImageCompanionRenderState(host, image);
 
       if (typeof playerWidth === "number" && image.enableEffect) {
@@ -25029,6 +25015,17 @@
     reapplyBoostCompanionWarpAfterLayout(sharedMultiplayerSystem);
     updateBoostCometsAfterLayout(runtimeScene, levelFiveBoostSystemState.get(runtimeScene));
     updateBoostCometsAfterLayout(runtimeScene, sharedMultiplayerSystem);
+    // Native Sticker and special-level callbacks may update companions after
+    // their normal sync. Lock visible enemy geometry immediately before render.
+    for (const name of ["Enemy", "SmartEnemy"]) {
+      for (const host of runtimeScene.getObjects(name)) {
+        const image = host.__headSpaceImageCompanion;
+        if (!image || image.__headSpaceCompanionHost !== host) continue;
+        image.setSize(host.getWidth(), host.getHeight());
+        image.setCenterPositionInScene(host.getCenterXInScene(), host.getCenterYInScene());
+        image.setAngle?.(host.getAngle?.() || 0);
+      }
+    }
     syncMultiplayerActorLightObstacles(runtimeScene);
     syncPrivateRoomFlow(runtimeScene,true);
   });
