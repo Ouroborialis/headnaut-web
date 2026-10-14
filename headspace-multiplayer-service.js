@@ -140,7 +140,7 @@
       const player = session.players.find(item => item.peerId === peerId);
       if (player) {
         applyActivity(player, data.activity); emitRoom();
-        broadcast({type:"presence",playerNumber:player.playerNumber,activity:{level:player.suggestedLevel,mode:player.suggestedMode,cursor:player.cursor}});
+        broadcast({type:"presence",playerNumber:player.playerNumber,activity:{name:player.name,level:player.suggestedLevel,mode:player.suggestedMode,cursor:player.cursor}});
       }
     } else if (data.type === "presence" && !session.isHost && peerId === session.hostPeerId && !session.started) {
       const player=session.players.find(item=>item.playerNumber===data.playerNumber);
@@ -447,6 +447,7 @@
   }
 
   function applyActivity(player, activity = {}) {
+    if(typeof activity.name === "string")player.name=profileOf({name:activity.name},`PLAYER ${player.playerNumber}`).name;
     if (Number.isInteger(activity.level) && activity.level >= 1 && activity.level <= 12) player.suggestedLevel = activity.level;
     if (["head-to-head", "hunt-the-boss"].includes(activity.mode)) player.suggestedMode = activity.mode;
     if (activity.cursor === null) player.cursor = null;
@@ -459,7 +460,7 @@
     if (session.isHost) {
       applyActivity(session.players[0], activity); emitRoom();
       const player=session.players[0];
-      broadcast({type:"presence",playerNumber:1,activity:{level:player.suggestedLevel,mode:player.suggestedMode,cursor:player.cursor}});
+      broadcast({type:"presence",playerNumber:1,activity:{name:player.name,level:player.suggestedLevel,mode:player.suggestedMode,cursor:player.cursor}});
     } else sendRoom(session.connections.get(session.hostPeerId), { type: "activity", activity });
     return true;
   }

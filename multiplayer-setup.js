@@ -35,6 +35,7 @@
     if (root?.__headSpaceResizeHandler) {
       window.removeEventListener("resize", root.__headSpaceResizeHandler);
     }
+    root?.__headSpaceNameCleanup?.();
     root?.remove();
   }
 
@@ -211,7 +212,7 @@
     const codeInput = root.querySelector("[data-code]");
     const nameInput = root.querySelector("[data-name]");
     try {nameInput.value=localStorage.getItem("headnaut-player-name")||"";}catch{}
-    const selectedName=()=>{const name=nameInput.value.trim().slice(0,20);try{localStorage.setItem("headnaut-player-name",name);}catch{}return name;};
+    const selectedName=()=>{const name=nameInput.value.replace(/[\u0000-\u001f\u007f]/g,"").trim().slice(0,20);try{localStorage.setItem("headnaut-player-name",name);}catch{}return name;};
     const startButton = root.querySelector("[data-start]");
     const createButton = root.querySelector("[data-create]");
     const joinButton = root.querySelector("[data-join]");
@@ -300,12 +301,31 @@
         playerList.appendChild(row);
       }
     };
+    let nameTimer=null,pendingName=null,shownNameRoom="";
+    const commitName=()=>{
+      clearTimeout(nameTimer);nameTimer=null;
+      const name=selectedName();
+      if(!room || room.phase!=="lobby" || room.closed)return;
+      pendingName=name || `PLAYER ${room.localPlayerNumber}`;
+      if(!globalThis.HeadSpaceMultiplayerService.updateActivity({name}))pendingName=null;
+    };
+    nameInput.addEventListener("input",()=>{
+      selectedName();clearTimeout(nameTimer);
+      if(room?.phase==="lobby")nameTimer=setTimeout(commitName,250);
+    });
+    nameInput.addEventListener("blur",commitName);
+    nameInput.addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();nameInput.blur();}});
+    root.__headSpaceNameCleanup=()=>{if(nameTimer!==null)commitName();clearTimeout(nameTimer);};
     const renderRoom = () => {
       if (room?.level) selectedLevel = Number(room.level);
       if (room?.mode) selectedMode = room.mode;
       const inRoom = !!room;
       const isHost = !!room?.isHost;
-      nameInput.disabled=inRoom;
+      nameInput.disabled=!!(room && (room.phase!=="lobby" || room.closed));
+      const localPlayer=room?.players?.find(player=>player.playerNumber===room.localPlayerNumber);
+      if(localPlayer?.name===pendingName)pendingName=null;
+      if(localPlayer && pendingName===null && (shownNameRoom!==room.code || document.activeElement!==nameInput))nameInput.value=localPlayer.name;
+      shownNameRoom=room?.code || "";
       codeInput.value = room?.code || codeInput.value;
       codeInput.readOnly = inRoom;
       codeInput.classList.toggle("mp-room-code-live", inRoom);
