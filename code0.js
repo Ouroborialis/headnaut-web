@@ -16570,6 +16570,17 @@ isConditionTrue_0 = false;
 }
 if (isConditionTrue_0) {
 gdjs.copyArray(gdjs.GameCode.GDPlayerObjects2, gdjs.GameCode.GDPlayerObjects3);
+// This input belongs to one device. Select its participant before the authored
+// size, orb, recoil, aim, and cooldown events run; other humans are replicas.
+const firingRoom = globalThis.HeadSpaceMultiplayerService?.getRoom?.();
+if (firingRoom?.status === "playing") {
+    const firingPlayers = gdjs.GameCode.GDPlayerObjects3.filter(player =>
+        player.__headSpaceRoomPlayerNumber === firingRoom.localPlayerNumber);
+    gdjs.GameCode.GDPlayerObjects3.length = 0;
+    gdjs.GameCode.GDPlayerObjects3.push(...firingPlayers);
+    if (!gdjs.GameCode.GDPlayerObjects3.length) return;
+}
+
 
 {for(var i = 0, len = gdjs.GameCode.GDPlayerObjects3.length ;i < len;++i) {
     gdjs.GameCode.GDPlayerObjects3[i].returnVariable(gdjs.GameCode.GDPlayerObjects3[i].getVariables().get("AngleToMouse")).setNumber((gdjs.GameCode.GDPlayerObjects3[i].getAngleToPosition(gdjs.evtTools.input.getCursorX(runtimeScene, "", 0), gdjs.evtTools.input.getCursorY(runtimeScene, "", 0))));
