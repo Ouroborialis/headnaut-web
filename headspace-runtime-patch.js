@@ -20780,6 +20780,13 @@
   }
 
   function isAbsorbNegativeFlashEnabled(object, flashStateByObjectKey, elapsedSeconds) {
+    // Host snapshots carry the absorption phase; motion/proximity and local
+    // scene clocks cannot suppress the victim's flash on another client.
+    const flash=object?.__headSpaceHumanAbsorbFlash;
+    if(flash && (flash.active || performance.now()<flash.until)) {
+      const phase=flash.phase+(performance.now()-flash.at)/1000;
+      return Math.sin(phase*ABSORB_NEGATIVE_FLASH_FREQUENCY_HZ*Math.PI*2)>=0;
+    }
     if (!flashStateByObjectKey || !object) return false;
 
     const objectKey = getAbsorbFlashObjectKey(object);
@@ -20803,7 +20810,8 @@
 
     for (let i = 0; i < followers.length; i++) {
       const follower = followers[i];
-      const host = findClosestHost(follower, hosts);
+      const boundHost=follower.__headSpaceCompanionHost;
+      const host = hosts.includes(boundHost) ? boundHost : findClosestHost(follower, hosts);
       setObjectAbsorbNegativeFlashEnabled(
         follower,
         !!host && isAbsorbNegativeFlashEnabled(host, flashStateByObjectKey, elapsedSeconds)
@@ -24740,7 +24748,7 @@
     };
     const capture = object => {
       const physics=object.getBehavior?.("Physics2");
-      return {id:object.__headSpaceRoomPlayerNumber || object.__headSpaceArenaId,x:object.getCenterXInScene(),y:object.getCenterYInScene(),size:object.getWidth(),angle:object.getAngle(),vx:physics?.getLinearVelocityX?.()||0,vy:physics?.getLinearVelocityY?.()||0,acceptedMass:state.acceptedMass.get(object.__headSpaceRoomPlayerNumber)||0,contactRevision:object.__headSpaceContactRevision||0,portal:!!(object.__headSpaceBlackHoleTransit || object.__headSpaceLevelNinePortalTransit)};
+      return {id:object.__headSpaceRoomPlayerNumber || object.__headSpaceArenaId,x:object.getCenterXInScene(),y:object.getCenterYInScene(),size:object.getWidth(),angle:object.getAngle(),vx:physics?.getLinearVelocityX?.()||0,vy:physics?.getLinearVelocityY?.()||0,acceptedMass:state.acceptedMass.get(object.__headSpaceRoomPlayerNumber)||0,contactRevision:object.__headSpaceContactRevision||0,absorbing:object.__headSpaceHumanAbsorbFlash?.active===true || performance.now()<(object.__headSpaceHumanAbsorbFlash?.until||0),absorbPhase:object.__headSpaceHumanAbsorbFlash ? object.__headSpaceHumanAbsorbFlash.phase+(performance.now()-object.__headSpaceHumanAbsorbFlash.at)/1000 : 0,portal:!!(object.__headSpaceBlackHoleTransit || object.__headSpaceLevelNinePortalTransit)};
     };
     const players=runtimeScene.getObjects("Player");
     if (room.isHost) {
@@ -24782,6 +24790,10 @@
           const number=player.__headSpaceRoomPlayerNumber;
           const packet=world.players.find(p=>p.id===number);
           if (!packet) { deleteRuntimeObjectTree(runtimeScene,player); continue; }
+          if(packet.absorbing && Number.isFinite(packet.absorbPhase)){
+            if(player.__headSpaceHumanAbsorbFlash?.worldSeq!==world.seq)player.__headSpaceHumanAbsorbFlash={phase:packet.absorbPhase,at:performance.now(),until:performance.now()+160,active:true,worldSeq:world.seq};
+          }
+          else delete player.__headSpaceHumanAbsorbFlash;
           if (number !== room.localPlayerNumber || state.restoreLocal || (Number(packet.contactRevision)||0) > (player.__headSpaceContactRevision||0)) {
             const restoringLocal=state.restoreLocal;
             apply(player,packet);
@@ -24889,24 +24901,41 @@
           ? Math.min(2*Math.max(0,distance-big.getWidth()/2),Math.max(0,small.getWidth()-0.5))
           : 2*Math.max(0,distance-big.getWidth()/2);
         if(remaining>=small.getWidth()) continue;
-        // Use the shipped Absorbus extension for the same shrink/growth and
-        // momentum transfer as orange enemies. Supply the validated swept/lag
-        // compensated distance without moving either actor or changing fixtures.
-        const nativeAbsorb=gdjs.evtsExt__Absorbus__Absorb.func;
-        const table=getHashtableApi();
+        // Swept/network contact may span the whole victim in one update.
+        // Retain the validated transfer, then apply it over visible native
+        // absorption frames instead of removing the victim before it can flash.
+        const pending=state.pendingAbsorptions || (state.pendingAbsorptions=new Map());
+        let entry=pending.get(small);
+        if(!entry || entry.big!==big){entry={big,target:remaining,rate:small.getWidth()/0.45,lastAt:performance.now()-16.67,startedAt:performance.now()};pending.set(small,entry);}
+        else entry.target=Math.min(entry.target,remaining);
+      }
+      const now=performance.now();
+      for(const [small,entry] of state.pendingAbsorptions || []) {
+        const big=entry.big;
+        if(!runtimeScene.getObjects("Player").includes(big) || !runtimeScene.getObjects("Player").includes(small) || big.getWidth()<=small.getWidth() || inPortal(big) || inPortal(small)) {
+          state.pendingAbsorptions.delete(small);delete small.__headSpaceHumanAbsorbFlash;continue;
+        }
+        // Retain native mass/momentum transfer while bounding the size change
+        // per rendered frame. A full catch-up bite spans at least 0.45 seconds,
+        // enough for the same 11 Hz negative animation to appear in snapshots.
+        const dt=Math.min(Math.max((now-entry.lastAt)/1000,0),1/30);entry.lastAt=now;
+        const remaining=Math.max(entry.target,small.getWidth()-entry.rate*dt);
+        if(remaining>=small.getWidth()-1e-6)continue;
+        const nativeAbsorb=gdjs.evtsExt__Absorbus__Absorb.func,table=getHashtableApi();
         const bigCenter={x:big.getCenterXInScene(),y:big.getCenterYInScene()};
         const smallCenter={x:small.getCenterXInScene(),y:small.getCenterYInScene()};
+        const before=small.getWidth();
         const hadOwn=Object.prototype.hasOwnProperty.call(big,"getDistanceToObject"),originalDistance=big.getDistanceToObject;
         big.getDistanceToObject=function(target){return target===small?(big.getWidth()+remaining)/2:originalDistance.call(this,target);};
-        try {
-          nativeAbsorb(runtimeScene,table.newFrom({Player:[big]}),"Physics2",table.newFrom({Player:[small]}),"Physics2",undefined);
-        } finally {if(hadOwn)big.getDistanceToObject=originalDistance;else delete big.getDistanceToObject;}
+        try{nativeAbsorb(runtimeScene,table.newFrom({Player:[big]}),"Physics2",table.newFrom({Player:[small]}),"Physics2",undefined);}
+        finally{if(hadOwn)big.getDistanceToObject=originalDistance;else delete big.getDistanceToObject;}
         setObjectSizeAndShape(big,big.getWidth());setObjectCenterExact(big,bigCenter.x,bigCenter.y);
-        if(small.getWidth()<1) {
-          recordMultiplayerAbsorption(runtimeScene,[big],[small]);
-          deleteRuntimeObjectTree(runtimeScene,small);
-        } else {
+        if(small.getWidth()<before-1e-6)small.__headSpaceHumanAbsorbFlash={phase:(now-entry.startedAt)/1000,at:now,until:now+120,active:true};
+        if(small.getWidth()<1){
+          recordMultiplayerAbsorption(runtimeScene,[big],[small]);deleteRuntimeObjectTree(runtimeScene,small);state.pendingAbsorptions.delete(small);
+        }else{
           setObjectSizeAndShape(small,small.getWidth());setObjectCenterExact(small,smallCenter.x,smallCenter.y);
+          if(small.getWidth()<=entry.target+1e-6){state.pendingAbsorptions.delete(small);if(small.__headSpaceHumanAbsorbFlash)small.__headSpaceHumanAbsorbFlash.active=false;}
         }
       }
     }
@@ -25071,6 +25100,15 @@
         image.setSize(host.getWidth(), host.getHeight());
         image.setCenterPositionInScene(host.getCenterXInScene(), host.getCenterYInScene());
         image.setAngle?.(host.getAngle?.() || 0);
+      }
+    }
+    for(const player of runtimeScene.getObjects("Player")) {
+      if(!player.__headSpaceHumanAbsorbFlash)continue;
+      const enabled=isAbsorbNegativeFlashEnabled(player,null,0);
+      for(const object of [player.__headSpaceImageCompanion,player.__headSpaceHelmetCompanion]) {
+        const renderer=object?.getRendererObject?.();
+        if(player.__headSpaceHumanAbsorbFlash.active || performance.now()<player.__headSpaceHumanAbsorbFlash.until)setRendererPlayerPrelaunchNegativeEnabled(renderer,false);
+        setRendererAbsorbNegativeFlashEnabled(renderer,enabled);
       }
     }
     syncMultiplayerActorLightObstacles(runtimeScene);
